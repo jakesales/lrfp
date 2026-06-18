@@ -1,16 +1,50 @@
 import {
   DEMO_PROPERTY,
+  DEMO_MANUAL_PERFECT,
+  DEMO_MANUAL_IMPERFECT,
   FIELD_LABELS,
   REQUIRED_FIELDS,
   OPTIONAL_FIELDS,
-  parseCsv,
+  parseCsvDetailed,
+  searchAddressesByPostcode,
+  validateProperty,
   formatAddress,
   formatCurrency,
+  formatPercent,
+  formatInterestRate,
+  hasDisplayValue,
+  computePortfolioMetrics,
+  enrichPropertyWithAvm,
+  enrichProperties,
+  computePropertyFinancials,
+  getMarketRentRange,
+  formatMortgageExpiry,
+  getDemoFinancials,
+  applyFinancialsToProperty,
   loadState,
   saveState,
+  isAccessCodeValid,
 } from './data.js';
 
+const PAGE_TITLES = {
+  gate: 'PriceHubble Demo Centre',
+  app: 'Investor Landlord Portal — Lloyds Banking Group',
+};
+
+const PROPERTY_TABS = [
+  { id: 'overview', label: 'Property overview' },
+  { id: 'financials', label: 'Financials' },
+  { id: 'risk', label: 'Risk assessment' },
+  { id: 'esg', label: 'ESG & Renovation' },
+  { id: 'market-trends', label: 'Market trends' },
+  { id: 'neighbourhood', label: 'Neighbourhood' },
+  { id: 'market-demand', label: 'Market demand' },
+];
+
 const app = document.getElementById('app');
+let manualEntryErrors = {};
+let manualEntryDraft = {};
+let pendingBulkImport = null;
 
 const LBG_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" fill="none" height="40" viewBox="0 0 180 50" width="144">
 <g>
@@ -35,6 +69,151 @@ function navigate(path) {
 function getRoute() {
   const hash = window.location.hash.slice(1) || '/login';
   return hash.startsWith('/') ? hash : `/${hash}`;
+}
+
+function parseRoute(route) {
+  const propertyMatch = route.match(/^\/portfolio\/property\/(\d+)(?:\/([a-z-]+))?$/);
+  if (propertyMatch) {
+    return {
+      type: 'property',
+      index: Number(propertyMatch[1]),
+      tab: propertyMatch[2] || 'overview',
+    };
+  }
+  return { type: 'standard', route };
+}
+
+function getPropertyTab(id) {
+  return PROPERTY_TABS.find((tab) => tab.id === id) || PROPERTY_TABS[0];
+}
+
+function getPortfolioProperty(index) {
+  const portfolio = state.portfolio;
+  if (!portfolio || index < 0 || index >= portfolio.properties.length) return null;
+  return enrichPropertyWithAvm(portfolio.properties[index]);
+}
+
+function propertyDemoSeed(property) {
+  const seed = `${property.postcode || ''}${property.propertyNumber || ''}`.length;
+  const marketRent = Number(property.marketRent) || 1200;
+  const avm = Number(property.avmValue) || 300000;
+  const sqft = 700 + (seed % 5) * 100;
+  const rentLow = Math.round(marketRent * (0.88 + (seed % 3) * 0.02));
+  const rentHigh = Math.round(marketRent * (1.08 + (seed % 4) * 0.02));
+  const epcCurrent = ['B', 'C', 'D', 'C'][seed % 4];
+  const epcPotential = epcCurrent === 'D' ? 'C' : epcCurrent === 'C' ? 'B' : 'A';
+
+  return {
+    bedrooms: 1 + (seed % 4),
+    floors: 2 + (seed % 3),
+    floorNumber: 1 + (seed % 2),
+    propertyType: seed % 3 === 0 ? 'House' : 'Flat',
+    sqft,
+    builtYear: 1985 + (seed % 20) * 5,
+    leasehold: seed % 4 === 0 ? 'yes' : 'no',
+    newBuilding: 'no',
+    epcRating: epcCurrent,
+    epcPotential,
+    epcScore: 62 + (seed % 18),
+    riskScore: ['Low', 'Medium', 'Medium', 'Elevated'][seed % 4],
+    rentDaysOnMarket: 6 + (seed % 20),
+    saleDaysOnMarket: 90 + (seed % 80),
+    demandScore: 55 + (seed % 35),
+    rentChangePct: -4 + (seed % 3),
+    saleChangePct: -2.3 + (seed % 2) * 0.5,
+    medianRent: Math.round(marketRent * 0.92),
+    medianSale: Math.round(avm * 0.88),
+    rentLow,
+    rentHigh,
+    rentPerSqft: (marketRent / sqft).toFixed(2),
+    salePerSqft: Math.round(avm / sqft),
+    similarRent: 300 + (seed % 300),
+    similarSale: 200 + (seed % 200),
+    comparables: 8 + (seed % 12),
+    rentTrend: [
+      { label: '01.06.2023', value: marketRent * 0.94, pct: '+3.50%' },
+      { label: '01.09.2023', value: marketRent * 0.97, pct: '+2.10%' },
+      { label: '01.12.2023', value: marketRent * 0.95, pct: '-1.67%' },
+      { label: '01.03.2024', value: marketRent * 0.98, pct: '+2.80%' },
+      { label: '01.06.2024', value: marketRent * 1.0, pct: '+1.20%' },
+      { label: '01.09.2024', value: marketRent * 0.99, pct: '-0.80%' },
+      { label: '01.12.2024', value: marketRent * 1.02, pct: '+2.40%' },
+      { label: '01.03.2025', value: marketRent, pct: '-4.00%' },
+    ],
+    saleTrend: [
+      { label: '01.06.2023', value: avm * 0.92, pct: '-1.50%' },
+      { label: '01.09.2023', value: avm * 0.94, pct: '+1.20%' },
+      { label: '01.12.2023', value: avm * 0.93, pct: '-0.90%' },
+      { label: '01.03.2024', value: avm * 0.96, pct: '+2.10%' },
+      { label: '01.06.2024', value: avm * 0.98, pct: '+1.80%' },
+      { label: '01.09.2024', value: avm * 0.99, pct: '+0.50%' },
+      { label: '01.12.2024', value: avm * 1.01, pct: '+1.60%' },
+      { label: '01.03.2025', value: avm, pct: '-2.30%' },
+    ],
+    epcImprovementCost: 6500 + (seed % 8) * 1750,
+    environmentalRisks: [
+      { label: 'Flood - River Sea', level: ['low', 'low', 'medium', 'high'][seed % 4] },
+      { label: 'Flood - Surface Water', level: ['low', 'medium', 'medium', 'low'][(seed + 1) % 4] },
+      { label: 'Chancel Liability', level: ['low', 'low', 'low', 'medium'][(seed + 2) % 4] },
+      { label: 'Subsidence', level: ['low', 'medium', 'low', 'low'][(seed + 3) % 4] },
+      { label: 'Cladding', level: ['low', 'low', 'low', 'medium'][seed % 4] },
+    ],
+    averageAskingPrice: Math.round(avm * (1.01 + (seed % 4) * 0.008)),
+    askingPriceChange3m: Number((-0.6 + (seed % 6) * 0.35).toFixed(1)),
+    askingPriceTrend: [
+      { label: 'Oct', value: avm * 0.96 },
+      { label: 'Nov', value: avm * 0.97 },
+      { label: 'Dec', value: avm * 0.98 },
+      { label: 'Jan', value: avm * 0.99 },
+      { label: 'Feb', value: avm * 1.0 },
+      { label: 'Mar', value: avm * 1.01 },
+      { label: 'Apr', value: avm * 1.005 },
+      { label: 'May', value: avm * 1.02 },
+      { label: 'Jun', value: avm * 1.015 },
+      { label: 'Jul', value: avm * 1.03 },
+    ],
+    listingsByAskingPrice: (() => {
+      const mid = Math.round(avm / 50000) * 50;
+      return [-2, -1, 0, 1, 2].map((offset, i) => ({
+        label: `£${mid + offset * 50}k`,
+        value: 14 + ((seed + i * 3) % 18),
+      }));
+    })(),
+    timeToSellTrend: [
+      { label: 'Oct', value: 95 + (seed % 10) },
+      { label: 'Nov', value: 92 + (seed % 12) },
+      { label: 'Dec', value: 88 + (seed % 8) },
+      { label: 'Jan', value: 85 + (seed % 10) },
+      { label: 'Feb', value: 82 + (seed % 9) },
+      { label: 'Mar', value: 78 + (seed % 11) },
+      { label: 'Apr', value: 80 + (seed % 8) },
+      { label: 'May', value: 76 + (seed % 10) },
+      { label: 'Jun', value: 74 + (seed % 7) },
+      { label: 'Jul', value: 72 + (seed % 9) },
+    ],
+    salesVolumeByDom: [
+      { label: '0-30', value: 38 + (seed % 15) },
+      { label: '31-60', value: 28 + (seed % 12) },
+      { label: '61-90', value: 18 + (seed % 10) },
+      { label: '91-120', value: 10 + (seed % 8) },
+      { label: '120+', value: 6 + (seed % 5) },
+    ],
+    transactionPriceTrend: [
+      { label: 'Q1 24', value: avm * 0.94 },
+      { label: 'Q2 24', value: avm * 0.96 },
+      { label: 'Q3 24', value: avm * 0.98 },
+      { label: 'Q4 24', value: avm * 0.99 },
+      { label: 'Q1 25', value: avm * 1.01 },
+      { label: 'Q2 25', value: avm * 1.02 },
+    ],
+    transactionPriceDistribution: (() => {
+      const mid = Math.round(avm / 50000) * 50;
+      return [-2, -1, 0, 1, 2, 3].map((offset, i) => ({
+        label: `£${mid + offset * 50}k`,
+        value: 8 + ((seed + i * 2) % 22),
+      }));
+    })(),
+  };
 }
 
 function requireAuth(route) {
@@ -68,12 +247,1014 @@ function renderHeader(showNav = true) {
   `;
 }
 
+function renderMissingIndicator() {
+  return `
+    <span class="missing-indicator" title="Missing data — update required" aria-label="Missing data, update required">
+      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="16" viewBox="0 0 18 16" aria-hidden="true">
+        <path d="M9 0.5L17.5 15H0.5L9 0.5Z" fill="#c41e3a"/>
+        <text x="9" y="12.5" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="Inter, sans-serif">!</text>
+      </svg>
+      <span class="missing-indicator__label">update</span>
+    </span>
+  `;
+}
+
+function renderRentAgreedDisplay(value, forSummary = false) {
+  const num = Number(String(value ?? '').replace(/[^0-9.]/g, ''));
+  if (num > 0) return formatCurrency(num);
+  if (forSummary) return '—';
+  return renderMissingIndicator();
+}
+
+function renderLineCurrency(value) {
+  if (!hasDisplayValue(value) || !Number(String(value).replace(/[^0-9.]/g, ''))) {
+    return renderMissingIndicator();
+  }
+  return `${formatCurrency(value)}<span class="cell-suffix">/mo</span>`;
+}
+
+function renderLineCurrencyPlain(value) {
+  if (!hasDisplayValue(value) || !Number(String(value).replace(/[^0-9.]/g, ''))) {
+    return renderMissingIndicator();
+  }
+  return formatCurrency(value);
+}
+
+function renderLineInterestRate(value) {
+  const formatted = formatInterestRate(value);
+  if (!formatted) return renderMissingIndicator();
+  return formatted;
+}
+
+function renderLineOccupancy(value) {
+  if (!hasDisplayValue(value)) return renderMissingIndicator();
+  const label = value === 'Let' ? 'Rented' : value;
+  const isRented = label === 'Rented';
+  return `<span class="badge ${isRented ? 'badge-green' : 'badge-amber'}">${escapeHtml(label)}</span>`;
+}
+
+function renderDetailValue(value, type = 'text') {
+  switch (type) {
+    case 'currency':
+      return renderLineCurrencyPlain(value);
+    case 'currency-mo':
+      return renderLineCurrency(value);
+    case 'percent':
+      return renderLineInterestRate(value) || renderMissingIndicator();
+    case 'occupancy':
+      return renderLineOccupancy(value);
+    case 'rent-agreed':
+      return renderRentAgreedDisplay(value);
+    default:
+      return hasDisplayValue(value) ? escapeHtml(String(value)) : renderMissingIndicator();
+  }
+}
+
+function renderDetailRow(label, value, type = 'text') {
+  return `
+    <div class="detail-row">
+      <dt class="detail-row__label">${escapeHtml(label)}</dt>
+      <dd class="detail-row__value">${renderDetailValue(value, type)}</dd>
+    </div>
+  `;
+}
+
+function renderPropertyHero(property) {
+  const seed = propertyDemoSeed(property);
+  const avm = Number(property.avmValue) || 0;
+  const grossYield = avm > 0 && property.marketRent
+    ? ((Number(property.marketRent) * 12) / avm) * 100
+    : null;
+
+  return `
+    <section class="property-hero" aria-label="Property summary">
+      <div class="property-hero__main">
+        <p class="property-hero__ref">${escapeHtml(property.titleRef)}</p>
+        <h1 class="property-hero__address">${escapeHtml(formatAddress(property))}</h1>
+        <p class="property-hero__meta">${seed.bedrooms} bedroom${seed.bedrooms === 1 ? '' : 's'} · ${seed.floors} floors · Floor ${seed.floorNumber}</p>
+      </div>
+      <div class="property-hero__metrics">
+        <div class="property-hero__metric">
+          <span class="property-hero__metric-value">${renderLineCurrencyPlain(property.avmValue)}</span>
+          <span class="property-hero__metric-label">Property value (AVM)</span>
+        </div>
+        <div class="property-hero__metric">
+          <span class="property-hero__metric-value">${renderLineCurrency(property.marketRent)}</span>
+          <span class="property-hero__metric-label">Market rent (Rent AVM)</span>
+        </div>
+        <div class="property-hero__metric">
+          <span class="property-hero__metric-value">${renderRentAgreedDisplay(property.rentAgreed)}</span>
+          <span class="property-hero__metric-label">Rent agreed</span>
+        </div>
+        <div class="property-hero__metric">
+          <span class="property-hero__metric-value">${grossYield != null ? formatPercent(grossYield) : '—'}</span>
+          <span class="property-hero__metric-label">Gross yield (market)</span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+const OVERVIEW_ICONS = {
+  key: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--lbg-green)"/><path d="M12 6l1.2 3.6H17l-3 2.2 1.1 3.5L12 13.8 8.9 15.3 10 11.8 7 9.6h3.8L12 6z" fill="#fff"/></svg>`,
+  rent: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--lbg-green)"/><path d="M12 7v5l3.5 2" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>`,
+  sale: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--lbg-green)"/><path d="M8 9h8l-1 8H9l-1-8zm1-2h6l.5 2h-7l.5-2z" fill="#fff"/></svg>`,
+  financials: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--lbg-green)"/><path d="M7 9h10v2H7V9zm0 4h6v2H7v-2z" fill="#fff"/></svg>`,
+  mortgage: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--lbg-green)"/><path d="M12 7a5 5 0 100 10 5 5 0 000-10zm0 2v3l2 1" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+};
+
+function formatOverviewAddress(property) {
+  return `${property.street} ${property.propertyNumber}, ${property.postcode} ${property.city}`;
+}
+
+function renderOverviewAttr(label, value) {
+  return `
+    <div class="overview-attr">
+      <span class="overview-attr__label">${escapeHtml(label)}</span>
+      <span class="overview-attr__value">${value}</span>
+    </div>
+  `;
+}
+
+function renderFinancialMetric(label, content) {
+  return `
+    <div class="financial-metric">
+      <span class="financial-metric__label">${escapeHtml(label)}</span>
+      <div class="financial-metric__value">${content}</div>
+    </div>
+  `;
+}
+
+function renderFinancialOrMissing(hasValue, content) {
+  if (!hasValue) return renderMissingIndicator();
+  return typeof content === 'function' ? content() : content;
+}
+
+function renderOverviewTrendChart(points) {
+  const width = 720;
+  const height = 180;
+  const padX = 36;
+  const padY = 28;
+  const values = points.map((p) => p.value);
+  const min = Math.min(...values) * 0.96;
+  const max = Math.max(...values) * 1.04;
+  const range = max - min || 1;
+
+  const coords = points.map((point, index) => {
+    const x = padX + (index / (points.length - 1)) * (width - padX * 2);
+    const y = height - padY - ((point.value - min) / range) * (height - padY * 2);
+    return { x, y, ...point };
+  });
+
+  const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x} ${c.y}`).join(' ');
+  const areaPath = `${linePath} L ${coords[coords.length - 1].x} ${height - padY} L ${coords[0].x} ${height - padY} Z`;
+
+  return `
+    <div class="overview-chart">
+      <svg viewBox="0 0 ${width} ${height}" class="overview-chart__svg" preserveAspectRatio="none">
+        <path d="${areaPath}" class="overview-chart__area"/>
+        <path d="${linePath}" class="overview-chart__line"/>
+        ${coords.map((c) => `
+          <circle cx="${c.x}" cy="${c.y}" r="4" class="overview-chart__dot"/>
+        `).join('')}
+      </svg>
+      <div class="overview-chart__labels">
+        ${coords.map((c) => `
+          <div class="overview-chart__point" style="left:${(c.x / width) * 100}%">
+            <span class="overview-chart__amount">${escapeHtml(c.pct)}</span>
+            <span class="overview-chart__date">${escapeHtml(c.label)}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderOccupancyBadge(occupancy) {
+  const label = occupancy === 'Let' ? 'Rented' : (occupancy || 'Vacant');
+  const isVacant = label === 'Vacant';
+  return `<span class="overview-status ${isVacant ? 'overview-status--vacant' : 'overview-status--rented'}">${escapeHtml(label)}</span>`;
+}
+
+function renderPropertyToolbar(index, activeTabId) {
+  return `
+    <div class="property-toolbar">
+      <a class="property-back" href="#/portfolio/summary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Back
+      </a>
+      <nav class="property-tabs" aria-label="Property sections">
+        <div class="property-tabs__scroll">
+          ${PROPERTY_TABS.map((tab) => `
+            <a
+              class="property-tabs__tab ${tab.id === activeTabId ? 'property-tabs__tab--active' : ''}"
+              href="#/portfolio/property/${index}/${tab.id}"
+              ${tab.id === activeTabId ? 'aria-current="page"' : ''}
+            >${escapeHtml(tab.label)}</a>
+          `).join('')}
+        </div>
+      </nav>
+    </div>
+  `;
+}
+
+function renderPropertyOverviewTab(property) {
+  const seed = propertyDemoSeed(property);
+  const marketRent = Number(property.marketRent) || 0;
+  const avm = Number(property.avmValue) || 0;
+  const rentAgreed = Number(property.rentAgreed) || 0;
+  const rentPcm = rentAgreed > 0 ? rentAgreed : marketRent;
+  const suggestedRent = marketRent;
+
+  return `
+    <div class="property-tab-panel property-tab-panel--overview">
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <span class="overview-section__icon">${OVERVIEW_ICONS.key}</span>
+            <h2 class="overview-section__title">Key information</h2>
+          </div>
+          <div class="overview-section__actions">
+            <button type="button" class="overview-action-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12M12 15l4-4M8 11l4 4M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Share
+            </button>
+            <button type="button" class="overview-action-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+              Edit
+            </button>
+            ${renderOccupancyBadge(property.occupancy)}
+          </div>
+        </div>
+
+        <p class="overview-address">${escapeHtml(formatOverviewAddress(property))}</p>
+
+        <div class="overview-attrs">
+          ${renderOverviewAttr('Type', escapeHtml(seed.propertyType))}
+          ${renderOverviewAttr('Number of bedrooms', seed.bedrooms)}
+          ${renderOverviewAttr('Current → Potential EPC', `${seed.epcRating} → ${seed.epcPotential}`)}
+          ${renderOverviewAttr('Net living area (sq.ft)', seed.sqft.toLocaleString('en-GB'))}
+          ${renderOverviewAttr('Built', seed.builtYear)}
+          ${renderOverviewAttr('Leasehold?', seed.leasehold)}
+          ${renderOverviewAttr('Number of floors', seed.floors)}
+          ${renderOverviewAttr('Floor number', seed.floorNumber)}
+          ${renderOverviewAttr('New building', seed.newBuilding)}
+        </div>
+      </section>
+
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <span class="overview-section__icon">${OVERVIEW_ICONS.rent}</span>
+            <h2 class="overview-section__title">Rent</h2>
+          </div>
+        </div>
+
+        <div class="overview-metrics">
+          <div class="overview-metric">
+            <span class="overview-metric__label">Rent pcm</span>
+            <span class="overview-metric__value">${marketRent > 0 ? formatCurrency(rentPcm) : renderMissingIndicator()}</span>
+          </div>
+          <div class="overview-metric">
+            <span class="overview-metric__label">Rent per sq.ft</span>
+            <span class="overview-metric__value">${marketRent > 0 ? `£${seed.rentPerSqft}` : '—'}</span>
+          </div>
+          <div class="overview-metric">
+            <span class="overview-metric__label">Market rent</span>
+            <span class="overview-metric__value">${marketRent > 0 ? `${formatCurrency(seed.rentLow)} - ${formatCurrency(seed.rentHigh)}` : renderMissingIndicator()}</span>
+          </div>
+          <div class="overview-metric">
+            <span class="overview-metric__label">Suggested rent</span>
+            <span class="overview-metric__value">${marketRent > 0 ? formatCurrency(suggestedRent) : renderMissingIndicator()}</span>
+          </div>
+        </div>
+
+        <div class="overview-market-box">
+          <div class="overview-market-box__item">
+            <span class="overview-market-box__dot"></span>
+            <span>Similar properties: <strong>+ ${seed.similarRent}</strong></span>
+          </div>
+          <p class="overview-market-box__text">On average, similar properties stay on the market for <strong>${seed.rentDaysOnMarket} day(s)</strong></p>
+        </div>
+
+        <h3 class="overview-subtitle">Change in average rents</h3>
+        <div class="overview-trend-meta">
+          <span>Last quarter's median rent: <strong>${formatCurrency(seed.medianRent)}</strong></span>
+          <span>Last 2 years % change: <strong class="${seed.rentChangePct < 0 ? 'overview-trend-meta--down' : ''}">${seed.rentChangePct}%</strong></span>
+        </div>
+        ${renderOverviewTrendChart(seed.rentTrend)}
+      </section>
+
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <span class="overview-section__icon">${OVERVIEW_ICONS.sale}</span>
+            <h2 class="overview-section__title">Sale</h2>
+          </div>
+        </div>
+
+        <div class="overview-metrics overview-metrics--3">
+          <div class="overview-metric">
+            <span class="overview-metric__label">Sale price</span>
+            <span class="overview-metric__value">${avm > 0 ? formatCurrency(avm) : renderMissingIndicator()}</span>
+          </div>
+          <div class="overview-metric">
+            <span class="overview-metric__label">Sale per sq.ft</span>
+            <span class="overview-metric__value">${avm > 0 ? `£${seed.salePerSqft} /sq.ft` : '—'}</span>
+          </div>
+          <div class="overview-metric">
+            <span class="overview-metric__label">Market sale</span>
+            <span class="overview-metric__value">${avm > 0 ? `${formatCurrency(Math.round(avm * 0.92))} - ${formatCurrency(Math.round(avm * 1.06))}` : '£ - £'}</span>
+          </div>
+        </div>
+
+        <div class="overview-market-box">
+          <div class="overview-market-box__item">
+            <span class="overview-market-box__dot"></span>
+            <span>Similar properties: <strong>+ ${seed.similarSale}</strong></span>
+          </div>
+          <p class="overview-market-box__text">On average, similar properties stay on the market for <strong>${seed.saleDaysOnMarket} day(s)</strong></p>
+        </div>
+
+        <h3 class="overview-subtitle">Change in average sales prices</h3>
+        <div class="overview-trend-meta">
+          <span>Last quarter's median sale: <strong>${formatCurrency(seed.medianSale)}</strong></span>
+          <span>Last 2 years % change: <strong class="${seed.saleChangePct < 0 ? 'overview-trend-meta--down' : ''}">${seed.saleChangePct}%</strong></span>
+        </div>
+        ${renderOverviewTrendChart(seed.saleTrend)}
+      </section>
+    </div>
+  `;
+}
+
+function renderPropertyFinancialsTab(property, index) {
+  const fin = computePropertyFinancials(property);
+
+  const currentValueHtml = renderFinancialOrMissing(
+    fin.hasCurrentValue,
+    () => `<strong>${formatCurrency(fin.currentValue)}</strong>`,
+  );
+
+  const valueChangeHtml = renderFinancialOrMissing(
+    fin.hasValueChange,
+    () => `<strong class="${fin.valueChange >= 0 ? 'financial-change--up' : 'financial-change--down'}">${
+      fin.valueChange >= 0 ? '+' : ''
+    }${formatCurrency(fin.valueChange)} (${fin.valueChangePct >= 0 ? '+' : ''}${fin.valueChangePct.toFixed(1)}%)</strong>`,
+  );
+
+  const marketRentHtml = fin.hasMarketRent
+    ? `<strong>${formatCurrency(fin.marketRentRange.low)} - ${formatCurrency(fin.marketRentRange.high)}</strong>`
+    : renderMissingIndicator();
+
+  const rentAgreedHtml = renderFinancialOrMissing(
+    fin.hasRentAgreed,
+    () => `<strong>${formatCurrency(fin.rentAgreed)}</strong><span class="cell-suffix">/mo</span>`,
+  );
+
+  const refinanceHtml = fin.hasIndicativeRefinance
+    ? `<strong>${fin.indicativeRefinanceRate.toFixed(1)}%</strong>${
+      fin.monthlySavings > 0
+        ? `<span class="financial-savings">— save ${formatCurrency(fin.monthlySavings)} monthly</span>`
+        : ''
+    }`
+    : renderMissingIndicator();
+
+  const mortgageExpiryDisplay = formatMortgageExpiry(fin.mortgageExpiry);
+
+  return `
+    <div class="property-tab-panel property-tab-panel--financials">
+      <section class="financial-section">
+        <div class="financial-section__header">
+          <div class="financial-section__title-wrap">
+            <span class="financial-section__icon">${OVERVIEW_ICONS.financials}</span>
+            <h2 class="financial-section__title">Financials</h2>
+          </div>
+          <button type="button" class="financial-action-btn" data-action="open-financials-edit">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            Edit
+          </button>
+        </div>
+
+        <div class="financial-grid">
+          <div class="financial-grid__col">
+            ${renderFinancialMetric('Purchase price', renderFinancialOrMissing(fin.hasPurchasePrice, () => `<strong>${formatCurrency(fin.purchasePrice)}</strong>`))}
+            ${renderFinancialMetric('Remaining mortgage', renderFinancialOrMissing(fin.hasRemainingMortgage, () => `<strong>${formatCurrency(fin.remainingMortgage)}</strong>`))}
+            ${renderFinancialMetric('Mortgage expiry', renderFinancialOrMissing(fin.hasMortgageExpiry && !!mortgageExpiryDisplay, () => `<strong>${escapeHtml(mortgageExpiryDisplay || '')}</strong>`))}
+            ${renderFinancialMetric('Bank', renderFinancialOrMissing(fin.hasBank, () => `<strong>${escapeHtml(fin.bank)}</strong>`))}
+          </div>
+          <div class="financial-grid__col">
+            ${renderFinancialMetric('Current value', currentValueHtml)}
+            ${renderFinancialMetric('Value change', valueChangeHtml)}
+            ${renderFinancialMetric('Interest rate', renderFinancialOrMissing(fin.hasInterestRate, () => `<strong>${fin.interestRate.toFixed(1)}%</strong>`))}
+          </div>
+          <div class="financial-grid__col">
+            ${renderFinancialMetric('Market rent', marketRentHtml)}
+            ${renderFinancialMetric('Rent agreed', rentAgreedHtml)}
+            ${renderFinancialMetric('LTV', renderFinancialOrMissing(fin.hasLtv, () => `<strong>${fin.ltv.toFixed(0)}%</strong>`))}
+            ${renderFinancialMetric('Indicative refinancing rate', refinanceHtml)}
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal" id="financials-edit-modal" hidden>
+      <div class="modal__backdrop" data-action="close-financials-edit"></div>
+      <div class="modal__panel" role="dialog" aria-labelledby="financials-edit-title" aria-modal="true">
+        <h2 class="modal__title" id="financials-edit-title">Edit financial details</h2>
+        <p class="modal__intro">Add your purchase, mortgage and tenancy details. Calculated fields will update automatically.</p>
+        <form id="financials-edit-form" class="modal__form">
+          <div class="form-field">
+            <label for="fin-purchase-price">Purchase price (£)</label>
+            <input type="text" id="fin-purchase-price" name="purchasePrice" inputmode="decimal" value="${escapeHtml(property.purchasePrice || '')}" placeholder="e.g. 350000">
+          </div>
+          <div class="form-field">
+            <label for="fin-remaining-mortgage">Remaining mortgage (£)</label>
+            <input type="text" id="fin-remaining-mortgage" name="remainingMortgage" inputmode="decimal" value="${escapeHtml(property.mortgageBalance || '')}" placeholder="e.g. 235000">
+          </div>
+          <div class="form-field">
+            <label for="fin-rent-agreed">Rent agreed (£/month)</label>
+            <input type="text" id="fin-rent-agreed" name="rentAgreed" inputmode="decimal" value="${escapeHtml(property.rentAgreed || '')}" placeholder="e.g. 1450">
+          </div>
+          <div class="form-field">
+            <label for="fin-interest-rate">Interest rate (%)</label>
+            <input type="text" id="fin-interest-rate" name="interestRate" inputmode="decimal" value="${escapeHtml(property.interestRate || '')}" placeholder="e.g. 3.5">
+          </div>
+          <div class="form-field">
+            <label for="fin-bank">Bank</label>
+            <input type="text" id="fin-bank" name="bank" value="${escapeHtml(property.mortgageProvider || '')}" placeholder="e.g. Barclays">
+          </div>
+          <div class="form-field">
+            <label for="fin-mortgage-expiry">Mortgage expiry</label>
+            <input type="month" id="fin-mortgage-expiry" name="mortgageExpiry" value="${escapeHtml(property.mortgageEndDate ? String(property.mortgageEndDate).slice(0, 7) : '')}">
+          </div>
+          <div class="modal__actions">
+            <button type="button" class="btn btn-secondary" data-action="prefill-financials-demo">Fill demo data</button>
+            <button type="button" class="btn btn-tertiary" data-action="close-financials-edit">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function bindFinancialsEdit(index) {
+  const modal = document.getElementById('financials-edit-modal');
+  const form = document.getElementById('financials-edit-form');
+  if (!modal || !form) return;
+
+  const open = () => { modal.hidden = false; };
+  const close = () => { modal.hidden = true; };
+
+  const saveFinancialsFromForm = () => {
+    const portfolio = state.portfolio;
+    if (!portfolio?.properties[index]) return;
+
+    const data = new FormData(form);
+    const property = portfolio.properties[index];
+    property.purchasePrice = String(data.get('purchasePrice') || '').trim();
+    property.mortgageBalance = String(data.get('remainingMortgage') || '').trim();
+    property.rentAgreed = String(data.get('rentAgreed') || '').trim();
+    property.interestRate = String(data.get('interestRate') || '').trim();
+    property.mortgageProvider = String(data.get('bank') || '').trim();
+
+    const expiryMonth = String(data.get('mortgageExpiry') || '').trim();
+    property.mortgageEndDate = expiryMonth ? `${expiryMonth}-01` : '';
+
+    applyFinancialsToProperty(property);
+    saveState(state);
+    close();
+    render();
+  };
+
+  document.querySelectorAll('[data-action="open-financials-edit"]').forEach((btn) => {
+    btn.addEventListener('click', open);
+  });
+  document.querySelectorAll('[data-action="close-financials-edit"]').forEach((btn) => {
+    btn.addEventListener('click', close);
+  });
+
+  document.querySelector('[data-action="prefill-financials-demo"]')?.addEventListener('click', () => {
+    const property = state.portfolio?.properties[index];
+    if (!property) return;
+
+    const demo = getDemoFinancials(enrichPropertyWithAvm(property));
+    form.purchasePrice.value = demo.purchasePrice;
+    form.remainingMortgage.value = demo.remainingMortgage;
+    form.rentAgreed.value = demo.rentAgreed;
+    form.interestRate.value = demo.interestRate;
+    form.bank.value = demo.bank;
+    if (form.mortgageExpiry) form.mortgageExpiry.value = demo.mortgageExpiry;
+  });
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveFinancialsFromForm();
+  });
+}
+
+const CARD_LAYOUT_TABS = new Set([
+  'overview',
+  'financials',
+  'risk',
+  'esg',
+  'market-trends',
+  'market-demand',
+]);
+
+function renderTrafficLightRisk(label, level) {
+  const levels = ['low', 'medium', 'high'];
+  const active = levels.includes(level) ? level : 'low';
+
+  return `
+    <div class="risk-traffic-row">
+      <span class="risk-traffic-row__label">${escapeHtml(label)}</span>
+      <div class="risk-traffic-lights" role="img" aria-label="${escapeHtml(label)}: ${active}">
+        ${levels.map((l) => `
+          <span
+            class="risk-traffic-light risk-traffic-light--${l}${l === active ? ' risk-traffic-light--active' : ''}"
+            title="${l.charAt(0).toUpperCase() + l.slice(1)}"
+          ></span>
+        `).join('')}
+      </div>
+      <span class="risk-traffic-row__level risk-traffic-row__level--${active}">${active.charAt(0).toUpperCase() + active.slice(1)}</span>
+    </div>
+  `;
+}
+
+function renderSimpleLineChart(points, options = {}) {
+  const width = options.width || 680;
+  const height = options.height || 200;
+  const padX = 44;
+  const padY = 32;
+  const values = points.map((p) => p.value);
+  const min = Math.min(...values) * 0.97;
+  const max = Math.max(...values) * 1.03;
+  const range = max - min || 1;
+
+  const coords = points.map((point, index) => {
+    const x = padX + (index / Math.max(points.length - 1, 1)) * (width - padX * 2);
+    const y = height - padY - ((point.value - min) / range) * (height - padY * 2);
+    return { x, y, ...point };
+  });
+
+  const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x} ${c.y}`).join(' ');
+  const areaPath = `${linePath} L ${coords[coords.length - 1].x} ${height - padY} L ${coords[0].x} ${height - padY} Z`;
+
+  return `
+    <div class="analytics-chart">
+      <svg viewBox="0 0 ${width} ${height}" class="analytics-chart__svg" preserveAspectRatio="xMidYMid meet">
+        <path d="${areaPath}" class="analytics-chart__area"/>
+        <path d="${linePath}" class="analytics-chart__line"/>
+        ${coords.map((c) => `<circle cx="${c.x}" cy="${c.y}" r="4" class="analytics-chart__dot"/>`).join('')}
+        ${coords.map((c, i) => (i % 2 === 0 || i === coords.length - 1 ? `
+          <text x="${c.x}" y="${height - 10}" text-anchor="middle" class="analytics-chart__axis-label">${escapeHtml(c.label)}</text>
+        ` : '')).join('')}
+      </svg>
+    </div>
+  `;
+}
+
+function renderSimpleBarChart(bars, options = {}) {
+  const width = options.width || 680;
+  const height = options.height || 200;
+  const padX = 40;
+  const padY = 32;
+  const maxVal = Math.max(...bars.map((b) => b.value), 1);
+  const slot = (width - padX * 2) / bars.length;
+  const barWidth = slot * 0.55;
+
+  return `
+    <div class="analytics-chart">
+      <svg viewBox="0 0 ${width} ${height}" class="analytics-chart__svg" preserveAspectRatio="xMidYMid meet">
+        ${bars.map((bar, i) => {
+    const barH = (bar.value / maxVal) * (height - padY * 2);
+    const x = padX + i * slot + (slot - barWidth) / 2;
+    const y = height - padY - barH;
+    return `
+            <rect x="${x}" y="${y}" width="${barWidth}" height="${barH}" rx="4" class="analytics-chart__bar"/>
+            <text x="${x + barWidth / 2}" y="${height - 12}" text-anchor="middle" class="analytics-chart__axis-label">${escapeHtml(bar.label)}</text>
+          `;
+  }).join('')}
+      </svg>
+    </div>
+  `;
+}
+
+function renderAnalyticsStats(stats) {
+  return `
+    <div class="analytics-stats">
+      ${stats.map((stat) => `
+        <div class="analytics-stat">
+          <span class="analytics-stat__label">${escapeHtml(stat.label)}</span>
+          <span class="analytics-stat__value ${stat.tone ? `analytics-stat__value--${stat.tone}` : ''}">${stat.value}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderPropertyRiskTab(property) {
+  const seed = propertyDemoSeed(property);
+
+  return `
+    <div class="property-tab-panel property-tab-panel--overview">
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Risk assessment</h2>
+          </div>
+        </div>
+        <p class="property-tab-panel__intro">Environmental and property risks for this location.</p>
+
+        <div class="risk-traffic-legend" aria-hidden="true">
+          <span><span class="risk-traffic-light risk-traffic-light--low risk-traffic-light--active"></span> Low</span>
+          <span><span class="risk-traffic-light risk-traffic-light--medium risk-traffic-light--active"></span> Medium</span>
+          <span><span class="risk-traffic-light risk-traffic-light--high risk-traffic-light--active"></span> High</span>
+        </div>
+
+        <div class="risk-traffic-list">
+          ${seed.environmentalRisks.map((risk) => renderTrafficLightRisk(risk.label, risk.level)).join('')}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderPropertyEsgTab(property) {
+  const seed = propertyDemoSeed(property);
+
+  return `
+    <div class="property-tab-panel property-tab-panel--overview">
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">ESG &amp; Renovation</h2>
+          </div>
+        </div>
+        <p class="property-tab-panel__intro">Energy performance and estimated cost to reach the potential rating.</p>
+
+        <div class="esg-epc-grid">
+          <div class="esg-epc-card">
+            <span class="esg-epc-card__label">Current EPC rating</span>
+            <span class="esg-epc-card__badge esg-epc-card__badge--current">${seed.epcRating}</span>
+          </div>
+          <div class="esg-epc-card esg-epc-card--arrow" aria-hidden="true">→</div>
+          <div class="esg-epc-card">
+            <span class="esg-epc-card__label">Potential EPC rating</span>
+            <span class="esg-epc-card__badge esg-epc-card__badge--potential">${seed.epcPotential}</span>
+          </div>
+          <div class="esg-epc-card esg-epc-card--cost">
+            <span class="esg-epc-card__label">Total cost to improve</span>
+            <span class="esg-epc-card__value">${formatCurrency(seed.epcImprovementCost)}</span>
+            <span class="esg-epc-card__hint">Estimated works to reach EPC ${seed.epcPotential}</span>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderPropertyMarketTrendsTab(property) {
+  const seed = propertyDemoSeed(property);
+  const changeTone = seed.askingPriceChange3m >= 0 ? 'up' : 'down';
+
+  return `
+    <div class="property-tab-panel property-tab-panel--overview">
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Change in average asking prices</h2>
+          </div>
+        </div>
+        ${renderAnalyticsStats([
+    { label: 'Average asking price', value: formatCurrency(seed.averageAskingPrice) },
+    {
+      label: '% change over 3 months',
+      value: `${seed.askingPriceChange3m >= 0 ? '+' : ''}${seed.askingPriceChange3m}%`,
+      tone: changeTone,
+    },
+  ])}
+        ${renderSimpleLineChart(seed.askingPriceTrend)}
+      </section>
+
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Listings by asking price</h2>
+          </div>
+        </div>
+        <p class="property-tab-panel__intro">Active listings near ${escapeHtml(property.city)} grouped by asking price band.</p>
+        ${renderSimpleBarChart(seed.listingsByAskingPrice)}
+      </section>
+    </div>
+  `;
+}
+
+function renderPropertyMarketDemandTab(property) {
+  const seed = propertyDemoSeed(property);
+
+  return `
+    <div class="property-tab-panel property-tab-panel--overview">
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Change in time to sell</h2>
+          </div>
+        </div>
+        <p class="property-tab-panel__intro">Average days on market for comparable sales in ${escapeHtml(property.city)}.</p>
+        ${renderSimpleLineChart(seed.timeToSellTrend, { height: 180 })}
+      </section>
+
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Volume of sales by days on market</h2>
+          </div>
+        </div>
+        ${renderSimpleBarChart(seed.salesVolumeByDom, { height: 180 })}
+      </section>
+
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Transaction price evolution</h2>
+          </div>
+        </div>
+        ${renderSimpleLineChart(seed.transactionPriceTrend, { height: 180 })}
+      </section>
+
+      <section class="overview-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <h2 class="overview-section__title">Transaction price distribution</h2>
+          </div>
+        </div>
+        ${renderSimpleBarChart(seed.transactionPriceDistribution, { height: 180 })}
+      </section>
+    </div>
+  `;
+}
+
+function renderPropertyNeighbourhoodTab(property) {
+  const seed = propertyDemoSeed(property);
+  const amenities = [
+    { label: 'Transport links', score: 'Strong' },
+    { label: 'Schools', score: 'Good' },
+    { label: 'Amenities', score: seed.bedrooms > 2 ? 'Very good' : 'Good' },
+    { label: 'Green space', score: 'Average' },
+  ];
+
+  return `
+    <div class="property-tab-panel">
+      <h2 class="property-tab-panel__title">Neighbourhood</h2>
+      <p class="property-tab-panel__intro">Location context for ${escapeHtml(property.postcode)} and surrounding ${escapeHtml(property.city)} area.</p>
+
+      <div class="neighbourhood-map" aria-hidden="true">
+        <div class="neighbourhood-map__pin"></div>
+        <p class="neighbourhood-map__label">${escapeHtml(property.city)} · ${escapeHtml(property.postcode)}</p>
+      </div>
+
+      <div class="detail-grid">
+        ${amenities.map((item) => `
+          <div class="insight-card">
+            <p class="insight-card__label">${escapeHtml(item.label)}</p>
+            <p class="insight-card__value insight-card__value--sm">${escapeHtml(item.score)}</p>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderPropertyTabContent(property, tabId, index) {
+  switch (tabId) {
+    case 'financials':
+      return renderPropertyFinancialsTab(property, index);
+    case 'risk':
+      return renderPropertyRiskTab(property);
+    case 'esg':
+      return renderPropertyEsgTab(property);
+    case 'market-trends':
+      return renderPropertyMarketTrendsTab(property);
+    case 'neighbourhood':
+      return renderPropertyNeighbourhoodTab(property);
+    case 'market-demand':
+      return renderPropertyMarketDemandTab(property);
+    default:
+      return renderPropertyOverviewTab(property);
+  }
+}
+
+function renderPropertyDetail(index, tabId) {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  const property = getPortfolioProperty(index);
+  if (!property) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  const tab = getPropertyTab(tabId);
+  const tabLabel = tab.label;
+
+  document.title = `${property.titleRef} — ${tabLabel} — Lloyds Investor Portal`;
+
+  const isCardLayout = CARD_LAYOUT_TABS.has(tab.id);
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell page-shell--property">
+      <div class="property-page">
+        ${renderPropertyToolbar(index, tab.id)}
+        <div class="property-tab-content ${isCardLayout ? 'property-tab-content--cards' : ''}">
+          ${isCardLayout ? '' : renderPropertyHero(property)}
+          ${renderPropertyTabContent(property, tab.id, index)}
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+  if (tab.id === 'financials') bindFinancialsEdit(index);
+  bindPropertyTabs();
+}
+
+function bindPropertyTabs() {
+  document.querySelectorAll('.property-tabs__tab').forEach((tabLink) => {
+    tabLink.addEventListener('click', () => {
+      requestAnimationFrame(() => render());
+    });
+  });
+}
+
+function renderPortfolioReport(metrics) {
+  return `
+    <section class="portfolio-report" aria-label="Portfolio summary">
+      <div class="portfolio-report__header">
+        <div>
+          <h2 class="portfolio-report__title">Portfolio overview</h2>
+          <p class="portfolio-report__note">Property values and market rents are populated automatically from our AVM. Add rent agreed figures when tenancy terms are confirmed.</p>
+        </div>
+      </div>
+      <div class="portfolio-report__grid">
+        <div class="portfolio-metric portfolio-metric--highlight">
+          <div class="portfolio-metric__value">${formatCurrency(metrics.totalPortfolioValue)}</div>
+          <div class="portfolio-metric__label">Total portfolio value (AVM)</div>
+        </div>
+        <div class="portfolio-metric portfolio-metric--highlight">
+          <div class="portfolio-metric__value">${formatCurrency(metrics.totalMarketRent)}</div>
+          <div class="portfolio-metric__label">Total market rent (Rent AVM)</div>
+        </div>
+        <div class="portfolio-metric portfolio-metric--highlight">
+          <div class="portfolio-metric__value">${renderRentAgreedDisplay(metrics.totalRentAgreed, true)}</div>
+          <div class="portfolio-metric__label">Total rent agreed</div>
+        </div>
+        <div class="portfolio-metric">
+          <div class="portfolio-metric__value">${formatCurrency(metrics.totalEquity)}</div>
+          <div class="portfolio-metric__label">Total equity</div>
+        </div>
+        <div class="portfolio-metric">
+          <div class="portfolio-metric__value">${formatPercent(metrics.icr)}</div>
+          <div class="portfolio-metric__label">ICR</div>
+        </div>
+        <div class="portfolio-metric">
+          <div class="portfolio-metric__value">${metrics.totalProperties}</div>
+          <div class="portfolio-metric__label">Total properties</div>
+        </div>
+        <div class="portfolio-metric">
+          <div class="portfolio-metric__value">${formatCurrency(metrics.totalMortgageMonthly)}</div>
+          <div class="portfolio-metric__label">Monthly mortgage payments</div>
+        </div>
+        <div class="portfolio-metric">
+          <div class="portfolio-metric__value">${formatPercent(metrics.grossYield)}</div>
+          <div class="portfolio-metric__label">Gross yield (market rent)</div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderFooter() {
   return `
     <footer class="site-footer">
       © Lloyds Banking Group plc ${new Date().getFullYear()}. Demonstration prototype only.
     </footer>
   `;
+}
+
+function renderAccessGate() {
+  app.innerHTML = `
+    <div class="access-gate" id="access-gate">
+      <div class="access-gate__panel">
+        <img
+          class="access-gate__logo"
+          src="assets/pricehubble-logo.svg"
+          alt="PriceHubble"
+          width="200"
+          height="46"
+        >
+        <h1 class="access-gate__title">PriceHubble Demo Centre</h1>
+        <form class="passcode-form" id="passcode-form" autocomplete="off">
+          <div class="passcode-boxes" role="group" aria-label="Access code">
+            ${[0, 1, 2, 3, 4, 5].map((i) => `
+              <input
+                class="passcode-digit"
+                id="passcode-${i}"
+                type="text"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                maxlength="1"
+                autocomplete="off"
+                aria-label="Digit ${i + 1}"
+              >
+            `).join('')}
+          </div>
+          <p class="passcode-error" id="passcode-error" hidden>Incorrect code</p>
+        </form>
+      </div>
+    </div>
+  `;
+
+  document.title = PAGE_TITLES.gate;
+  bindPasscodeInputs();
+}
+
+function bindPasscodeInputs() {
+  const inputs = [...document.querySelectorAll('.passcode-digit')];
+  const errorEl = document.getElementById('passcode-error');
+  const gate = document.getElementById('access-gate');
+
+  const clearError = () => {
+    errorEl.hidden = true;
+    gate?.classList.remove('access-gate--error');
+  };
+
+  const getCode = () => inputs.map((input) => input.value).join('');
+
+  const resetInputs = () => {
+    inputs.forEach((input) => {
+      input.value = '';
+    });
+    inputs[0]?.focus();
+  };
+
+  const submitCode = () => {
+    const code = getCode();
+    if (code.length < 6) return;
+
+    if (isAccessCodeValid(code)) {
+      state.accessGranted = true;
+      saveState(state);
+      navigate('/login');
+      render();
+      return;
+    }
+
+    errorEl.hidden = false;
+    gate?.classList.add('access-gate--error');
+    resetInputs();
+  };
+
+  inputs.forEach((input, index) => {
+    input.addEventListener('input', () => {
+      clearError();
+      input.value = input.value.replace(/\D/g, '').slice(-1);
+      if (input.value && index < inputs.length - 1) {
+        inputs[index + 1].focus();
+      }
+      if (getCode().length === 6) {
+        submitCode();
+      }
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !input.value && index > 0) {
+        inputs[index - 1].focus();
+      }
+    });
+
+    input.addEventListener('paste', (e) => {
+      e.preventDefault();
+      clearError();
+      const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+      digits.split('').forEach((digit, i) => {
+        if (inputs[i]) inputs[i].value = digit;
+      });
+      if (digits.length === 6) {
+        submitCode();
+      } else if (digits.length > 0) {
+        inputs[Math.min(digits.length, inputs.length - 1)]?.focus();
+      }
+    });
+  });
+
+  inputs[0]?.focus();
 }
 
 function renderLogin() {
@@ -117,6 +1298,7 @@ function renderLogin() {
 
 function renderDashboard() {
   const hasPortfolio = state.portfolio && state.portfolio.properties.length > 0;
+  if (hasPortfolio) syncPortfolioAvm(state.portfolio);
 
   app.innerHTML = `
     ${renderHeader()}
@@ -127,22 +1309,9 @@ function renderDashboard() {
 
         ${hasPortfolio ? `
           <div class="alert alert-success">
-            Portfolio <strong>${escapeHtml(state.portfolio.name)}</strong> created with ${state.portfolio.properties.length} propert${state.portfolio.properties.length === 1 ? 'y' : 'ies'}.
+            Portfolio <strong>${escapeHtml(state.portfolio.name)}</strong> — ${state.portfolio.properties.length} propert${state.portfolio.properties.length === 1 ? 'y' : 'ies'}.
           </div>
-          <div class="stats-row">
-            <div class="stat-card">
-              <div class="stat-card__value">${state.portfolio.properties.length}</div>
-              <div class="stat-card__label">Properties</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-card__value">${state.portfolio.properties.filter((p) => p.tenancyStatus === 'Let').length}</div>
-              <div class="stat-card__label">Currently let</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-card__value">${formatCurrency(totalRent(state.portfolio.properties))}</div>
-              <div class="stat-card__label">Monthly rent</div>
-            </div>
-          </div>
+          ${renderPortfolioReport(computePortfolioMetrics(state.portfolio.properties))}
           <div class="btn-group">
             <a class="btn btn-primary" href="#/portfolio/summary">View portfolio</a>
             <button class="btn btn-secondary" data-action="create-new">Create another portfolio</button>
@@ -191,14 +1360,14 @@ function renderCreatePortfolio() {
         <h2 class="section-title">How would you like to add properties?</h2>
         <div class="card-grid">
           <button class="choice-card" data-method="manual">
-            <div class="choice-card__icon">+</div>
-            <h3 class="choice-card__title">Add one at a time</h3>
-            <p class="choice-card__desc">Enter property details manually. Use demo fill to autocomplete fields instantly.</p>
+            <div class="choice-card__icon">✎</div>
+            <h3 class="choice-card__title">Manual entry</h3>
+            <p class="choice-card__desc">Enter a postcode, pick from matching registered addresses, and add properties one at a time.</p>
           </button>
           <button class="choice-card" data-method="csv">
             <div class="choice-card__icon">↑</div>
-            <h3 class="choice-card__title">Bulk CSV upload</h3>
-            <p class="choice-card__desc">Upload a spreadsheet with multiple properties. Download our template to get started.</p>
+            <h3 class="choice-card__title">Bulk import</h3>
+            <p class="choice-card__desc">Upload a CSV file with multiple properties. Download our template to get started.</p>
           </button>
         </div>
       </div>
@@ -225,10 +1394,226 @@ function renderCreatePortfolio() {
       }
       draftPortfolio.name = name;
       state.draftPortfolio = draftPortfolio;
+      manualEntryDraft = {};
+      manualEntryErrors = {};
+      pendingBulkImport = null;
       saveState(state);
       navigate(btn.dataset.method === 'manual' ? '/portfolio/add' : '/portfolio/upload');
     });
   });
+}
+
+function renderManualEntryField(field, values = {}, errors = {}) {
+  const hasError = Boolean(errors[field]);
+  const errorHtml = `<div class="field-error" id="error-${field}">${hasError ? escapeHtml(errors[field]) : ''}</div>`;
+
+  return `
+    <div class="form-group">
+      <label for="${field}">${FIELD_LABELS[field]}</label>
+      <input
+        id="${field}"
+        name="${field}"
+        type="text"
+        required
+        class="${hasError ? 'input-error' : ''}"
+        value="${escapeHtml(values[field] || '')}"
+      >
+      ${errorHtml}
+    </div>
+  `;
+}
+
+function renderManualEntryForm(values = {}, errors = {}) {
+  const matches = searchAddressesByPostcode(values.postcode || '');
+  const pickerVisible = matches.length > 0;
+
+  return `
+    <div class="postcode-lookup-row">
+      ${renderManualEntryField('postcode', values, errors)}
+      <div class="form-group" id="property-picker-group" ${pickerVisible ? '' : 'hidden'}>
+        <label for="property-picker">Matching properties</label>
+        <select id="property-picker" name="propertyPicker">
+          <option value="">Select a property…</option>
+          ${matches.map((entry) => `
+            <option
+              value="${entry.id}"
+              ${values.addressId === entry.id ? 'selected' : ''}
+            >${escapeHtml(`${entry.propertyNumber} ${entry.street}, ${entry.city}`)}</option>
+          `).join('')}
+        </select>
+        <div class="field-error" aria-hidden="true">&nbsp;</div>
+      </div>
+    </div>
+    ${renderManualEntryField('titleRef', values, errors)}
+    <div class="form-row">
+      ${renderManualEntryField('propertyNumber', values, errors)}
+      ${renderManualEntryField('street', values, errors)}
+    </div>
+    ${renderManualEntryField('city', values, errors)}
+  `;
+}
+
+function renderBulkValidationPanel(result) {
+  if (!result || !result.rows.length) return '';
+
+  return `
+    <div class="card" id="bulk-validation-panel">
+      <h2 class="section-title">Import validation</h2>
+      <div class="validation-summary">
+        <span class="validation-summary__item validation-summary__item--valid">${result.validCount} valid</span>
+        <span class="validation-summary__item validation-summary__item--invalid">${result.invalidCount} with issues</span>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table validation-table">
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Ref</th>
+              <th>Postcode</th>
+              <th>Address</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${result.rows.map((row) => `
+              <tr class="${row.valid ? '' : 'row-invalid'}">
+                <td>${row.line}</td>
+                <td>${escapeHtml(row.property.titleRef || '—')}</td>
+                <td>${escapeHtml(row.property.postcode || '—')}</td>
+                <td>${escapeHtml(row.property.propertyNumber && row.property.street ? `${row.property.propertyNumber} ${row.property.street}, ${row.property.city}` : '—')}</td>
+                <td class="${row.valid ? '' : 'cell-error'}">${escapeHtml(row.summary)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${result.validCount > 0 ? `
+        <div class="btn-group">
+          <button type="button" class="btn btn-primary" id="import-valid-btn">Import ${result.validCount} valid propert${result.validCount === 1 ? 'y' : 'ies'}</button>
+        </div>
+      ` : `
+        <div class="alert" style="margin-top:16px;background:#fde8ec;color:#8a1530;border:1px solid #f5c2cb;">
+          No valid properties to import. Correct the issues above and try again.
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function bindManualEntryForm() {
+  const postcodeInput = document.getElementById('postcode');
+  const picker = document.getElementById('property-picker');
+  const pickerGroup = document.getElementById('property-picker-group');
+  const form = document.getElementById('property-form');
+
+  const refreshPicker = () => {
+    const matches = searchAddressesByPostcode(postcodeInput.value);
+    if (!pickerGroup || !picker) return;
+
+    if (!matches.length) {
+      pickerGroup.hidden = true;
+      picker.innerHTML = '<option value="">Select a property…</option>';
+      return;
+    }
+
+    pickerGroup.hidden = false;
+    const current = picker.value;
+    picker.innerHTML = `
+      <option value="">Select a property…</option>
+      ${matches.map((entry) => `
+        <option value="${entry.id}">${escapeHtml(`${entry.propertyNumber} ${entry.street}, ${entry.city}`)}</option>
+      `).join('')}
+    `;
+    if (matches.some((entry) => entry.id === current)) {
+      picker.value = current;
+    }
+  };
+
+  postcodeInput?.addEventListener('input', () => {
+    clearManualFieldError('postcode');
+    refreshPicker();
+  });
+
+  picker?.addEventListener('change', () => {
+    const matches = searchAddressesByPostcode(postcodeInput.value);
+    const selected = matches.find((entry) => entry.id === picker.value);
+    if (!selected) return;
+
+    document.getElementById('propertyNumber').value = selected.propertyNumber;
+    document.getElementById('street').value = selected.street;
+    document.getElementById('city').value = selected.city;
+    ['propertyNumber', 'street', 'city'].forEach(clearManualFieldError);
+  });
+
+  REQUIRED_FIELDS.forEach((field) => {
+    document.getElementById(field)?.addEventListener('input', () => clearManualFieldError(field));
+  });
+
+  document.querySelectorAll('[data-scenario]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      applyManualScenario(btn.dataset.scenario);
+    });
+  });
+
+  form?.addEventListener('submit', handleManualEntrySubmit);
+}
+
+function clearManualFieldError(field) {
+  manualEntryErrors[field] = '';
+  const input = document.getElementById(field);
+  const errorEl = document.getElementById(`error-${field}`);
+  input?.classList.remove('input-error');
+  if (errorEl) errorEl.textContent = '';
+}
+
+function applyManualScenario(scenario) {
+  const demo = scenario === 'perfect' ? DEMO_MANUAL_PERFECT : DEMO_MANUAL_IMPERFECT;
+  manualEntryErrors = {};
+  manualEntryDraft = { ...demo };
+
+  if (scenario === 'imperfect') {
+    manualEntryDraft.titleRef = '';
+    manualEntryDraft.street = DEMO_MANUAL_IMPERFECT.street;
+    manualEntryDraft.addressId = '';
+  }
+
+  renderAddProperty();
+}
+
+function handleManualEntrySubmit(e) {
+  e.preventDefault();
+  const property = collectPropertyFromForm(e.target, false);
+  manualEntryDraft = {
+    ...property,
+    addressId: document.getElementById('property-picker')?.value || '',
+  };
+  const { valid, errors } = validateProperty(property);
+
+  if (!valid) {
+    manualEntryErrors = errors;
+    renderAddProperty();
+    return;
+  }
+
+  manualEntryErrors = {};
+  manualEntryDraft = {};
+  draftPortfolio.properties.push(enrichPropertyWithAvm(property));
+  state.draftPortfolio = draftPortfolio;
+  saveState(state);
+  renderAddProperty();
+}
+
+function finalizeBulkImport(validProperties) {
+  state.portfolio = {
+    name: draftPortfolio.name,
+    properties: enrichProperties(validProperties),
+    createdAt: new Date().toISOString(),
+  };
+  draftPortfolio = { name: '', properties: [] };
+  state.draftPortfolio = draftPortfolio;
+  pendingBulkImport = null;
+  saveState(state);
+  navigate('/portfolio/summary');
 }
 
 function renderAddProperty() {
@@ -238,8 +1623,8 @@ function renderAddProperty() {
     ${renderHeader()}
     <main class="page-shell">
       <div class="page-content page-content--medium">
-        <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / <a href="#/portfolio/create">Create portfolio</a> / Add property</div>
-        <h1 class="page-title">Add property</h1>
+        <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / <a href="#/portfolio/create">Create portfolio</a> / Manual entry</div>
+        <h1 class="page-title">Manual entry</h1>
         <p class="page-subtitle">Portfolio: <strong>${escapeHtml(draftPortfolio.name)}</strong> · ${propertyCount} propert${propertyCount === 1 ? 'y' : 'ies'} added</p>
 
         ${propertyCount > 0 ? `
@@ -247,12 +1632,16 @@ function renderAddProperty() {
         ` : ''}
 
         <div class="card">
-          <div class="btn-group" style="margin-top: 0; margin-bottom: 20px;">
-            <button type="button" class="btn btn-secondary" id="demo-fill-btn">Fill with demo data</button>
+          <div class="scenario-panel">
+            <p class="scenario-panel__label">Demo scenarios</p>
+            <div class="btn-group" style="margin-top: 0;">
+              <button type="button" class="btn btn-secondary" data-scenario="perfect">Perfect entry</button>
+              <button type="button" class="btn btn-tertiary" data-scenario="imperfect">Entry with errors</button>
+            </div>
           </div>
 
           <form id="property-form">
-            ${renderPropertyFields()}
+            ${renderManualEntryForm(manualEntryDraft, manualEntryErrors)}
             <div class="btn-group">
               <button type="submit" class="btn btn-primary">Add property</button>
               ${propertyCount > 0 ? '<button type="button" class="btn btn-secondary" id="finish-btn">Finish portfolio</button>' : ''}
@@ -268,8 +1657,7 @@ function renderAddProperty() {
   `;
 
   bindCommonActions();
-  document.getElementById('demo-fill-btn').addEventListener('click', fillDemoData);
-  document.getElementById('property-form').addEventListener('submit', handleAddProperty);
+  bindManualEntryForm();
   document.getElementById('finish-btn')?.addEventListener('click', finishPortfolio);
 }
 
@@ -278,15 +1666,21 @@ function renderUploadCsv() {
     ${renderHeader()}
     <main class="page-shell">
       <div class="page-content page-content--medium">
-        <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / <a href="#/portfolio/create">Create portfolio</a> / Upload CSV</div>
-        <h1 class="page-title">Bulk upload properties</h1>
+        <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / <a href="#/portfolio/create">Create portfolio</a> / Bulk import</div>
+        <h1 class="page-title">Bulk import</h1>
         <p class="page-subtitle">Portfolio: <strong>${escapeHtml(draftPortfolio.name)}</strong></p>
 
         <div class="card">
           <p style="margin-top: 0;">Download the CSV template, fill in your property details, then upload the file. Required columns: Title/Ref, Postcode, Property number, Street, City.</p>
+          <div class="scenario-panel">
+            <p class="scenario-panel__label">Demo scenarios</p>
+            <div class="btn-group" style="margin-top: 0;">
+              <button type="button" class="btn btn-secondary" data-csv="perfect">Perfect import</button>
+              <button type="button" class="btn btn-tertiary" data-csv="errors">Import with errors</button>
+            </div>
+          </div>
           <div class="btn-group" style="margin-top: 0;">
             <a class="btn btn-secondary" href="assets/portfolio-template.csv" download="portfolio-template.csv">Download template</a>
-            <button type="button" class="btn btn-tertiary" id="load-sample-btn">Load sample CSV</button>
           </div>
         </div>
 
@@ -297,7 +1691,7 @@ function renderUploadCsv() {
             <label class="btn btn-primary" for="csv-input">Choose file</label>
             <input type="file" id="csv-input" accept=".csv,text/csv">
           </div>
-          <div id="upload-result"></div>
+          <div id="upload-result">${pendingBulkImport ? renderBulkValidationPanel(pendingBulkImport) : ''}</div>
         </div>
 
         <div class="btn-group">
@@ -310,7 +1704,19 @@ function renderUploadCsv() {
 
   bindCommonActions();
   setupCsvUpload();
-  document.getElementById('load-sample-btn').addEventListener('click', loadSampleCsv);
+  document.querySelectorAll('[data-csv]').forEach((btn) => {
+    btn.addEventListener('click', () => loadSampleCsv(btn.dataset.csv));
+  });
+  document.getElementById('import-valid-btn')?.addEventListener('click', () => {
+    if (pendingBulkImport?.validCount) {
+      finalizeBulkImport(pendingBulkImport.validProperties);
+    }
+  });
+}
+
+function syncPortfolioAvm(portfolio) {
+  portfolio.properties = enrichProperties(portfolio.properties);
+  saveState(state);
 }
 
 function renderSummary() {
@@ -320,59 +1726,69 @@ function renderSummary() {
     return;
   }
 
+  syncPortfolioAvm(portfolio);
+  const metrics = computePortfolioMetrics(portfolio.properties);
+
   app.innerHTML = `
     ${renderHeader()}
     <main class="page-shell">
       <div class="page-content">
         <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / Portfolio summary</div>
         <h1 class="page-title">${escapeHtml(portfolio.name)}</h1>
-        <p class="page-subtitle">Your portfolio has been created successfully.</p>
+        <p class="page-subtitle">Live portfolio reporting — add or remove properties to see figures update.</p>
 
-        <div class="stats-row">
-          <div class="stat-card">
-            <div class="stat-card__value">${portfolio.properties.length}</div>
-            <div class="stat-card__label">Total properties</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-card__value">${portfolio.properties.filter((p) => p.tenancyStatus === 'Let').length}</div>
-            <div class="stat-card__label">Let</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-card__value">${formatCurrency(totalRent(portfolio.properties))}</div>
-            <div class="stat-card__label">Monthly rent</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-card__value">${formatCurrency(totalMortgagePayments(portfolio.properties))}</div>
-            <div class="stat-card__label">Monthly mortgage</div>
-          </div>
-        </div>
+        ${renderPortfolioReport(metrics)}
 
         <div class="card">
-          <h2 class="section-title">Properties</h2>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px;">
+            <h2 class="section-title" style="margin: 0;">Properties</h2>
+            <a class="btn btn-secondary" href="#/portfolio/summary/add">Add property</a>
+          </div>
+          ${portfolio.properties.length === 0 ? `
+            <p style="color: var(--lbg-text-muted); margin: 0;">No properties in this portfolio. <a href="#/portfolio/summary/add">Add your first property</a>.</p>
+          ` : `
           <div class="data-table-wrap">
             <table class="data-table">
               <thead>
                 <tr>
                   <th>Ref</th>
                   <th>Address</th>
-                  <th>Status</th>
-                  <th>Rent</th>
-                  <th>Mortgage</th>
+                  <th>Property value (AVM)</th>
+                  <th>Market rent (Rent AVM)</th>
+                  <th>Rent agreed</th>
+                  <th>Occupancy</th>
+                  <th>Mortgage payments</th>
+                  <th>Interest rate</th>
+                  <th class="actions-col"></th>
                 </tr>
               </thead>
               <tbody>
-                ${portfolio.properties.map((p) => `
-                  <tr>
+                ${metrics.properties.map((p, index) => `
+                  <tr
+                    class="data-table__row--clickable"
+                    data-action="view-property"
+                    data-index="${index}"
+                    tabindex="0"
+                    role="link"
+                    aria-label="View ${escapeHtml(p.titleRef)}"
+                  >
                     <td><strong>${escapeHtml(p.titleRef)}</strong></td>
                     <td>${escapeHtml(formatAddress(p))}</td>
-                    <td>${p.tenancyStatus ? `<span class="badge ${p.tenancyStatus === 'Let' ? 'badge-green' : 'badge-amber'}">${escapeHtml(p.tenancyStatus)}</span>` : '—'}</td>
-                    <td>${formatCurrency(p.monthlyRent)}</td>
-                    <td>${p.mortgageProvider ? escapeHtml(p.mortgageProvider) : '—'}</td>
+                    <td>${renderLineCurrencyPlain(p.avmValue)}</td>
+                    <td>${renderLineCurrency(p.marketRent)}</td>
+                    <td>${renderRentAgreedDisplay(p.rentAgreed)}</td>
+                    <td>${renderLineOccupancy(p.occupancy)}</td>
+                    <td>${renderLineCurrency(p.monthlyPayments)}</td>
+                    <td>${renderLineInterestRate(p.interestRate)}</td>
+                    <td class="actions-col">
+                      <button type="button" class="btn-icon-danger" data-action="remove-property" data-index="${index}">Remove</button>
+                    </td>
                   </tr>
                 `).join('')}
               </tbody>
             </table>
           </div>
+          `}
         </div>
 
         <div class="btn-group">
@@ -390,6 +1806,77 @@ function renderSummary() {
     state.draftPortfolio = draftPortfolio;
     saveState(state);
     navigate('/portfolio/create');
+  });
+
+  document.querySelectorAll('[data-action="remove-property"]').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const index = Number(btn.dataset.index);
+      portfolio.properties.splice(index, 1);
+      saveState(state);
+      renderSummary();
+    });
+  });
+
+  document.querySelectorAll('[data-action="view-property"]').forEach((row) => {
+    const openProperty = () => {
+      navigate(`/portfolio/property/${row.dataset.index}/overview`);
+    };
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('[data-action="remove-property"]')) return;
+      openProperty();
+    });
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openProperty();
+      }
+    });
+  });
+}
+
+function renderSummaryAddProperty() {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell">
+      <div class="page-content page-content--medium">
+        <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / <a href="#/portfolio/summary">Portfolio</a> / Add property</div>
+        <h1 class="page-title">Add property</h1>
+        <p class="page-subtitle">Portfolio: <strong>${escapeHtml(portfolio.name)}</strong> · ${portfolio.properties.length} propert${portfolio.properties.length === 1 ? 'y' : 'ies'}</p>
+
+        <div class="card">
+          <div class="btn-group" style="margin-top: 0; margin-bottom: 20px;">
+            <button type="button" class="btn btn-secondary" id="demo-fill-btn">Fill with demo data</button>
+          </div>
+
+          <form id="property-form">
+            ${renderPropertyFields({}, true)}
+            <div class="btn-group">
+              <button type="submit" class="btn btn-primary">Add to portfolio</button>
+              <a class="btn btn-tertiary" href="#/portfolio/summary">Cancel</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+  document.getElementById('demo-fill-btn').addEventListener('click', () => fillDemoData(true));
+  document.getElementById('property-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const property = collectPropertyFromForm(form, true);
+    portfolio.properties.push(enrichPropertyWithAvm(property));
+    saveState(state);
+    navigate('/portfolio/summary');
   });
 }
 
@@ -435,7 +1922,14 @@ function renderFieldInput(field, values, optional = false) {
   `;
 }
 
-function renderPropertyFields(values = {}) {
+function renderPropertyFields(values = {}, includeOptional = false) {
+  const optionalSection = includeOptional ? `
+    <fieldset class="fieldset-optional">
+      <legend>Additional details (optional)</legend>
+      ${OPTIONAL_FIELDS.map((field) => renderFieldInput(field, values, true)).join('')}
+    </fieldset>
+  ` : '';
+
   return `
     <div class="form-row">
       ${renderFieldInput('titleRef', values)}
@@ -446,10 +1940,7 @@ function renderPropertyFields(values = {}) {
       ${renderFieldInput('street', values)}
     </div>
     ${renderFieldInput('city', values)}
-    <fieldset class="fieldset-optional">
-      <legend>Additional details (optional)</legend>
-      ${OPTIONAL_FIELDS.map((field) => renderFieldInput(field, values, true)).join('')}
-    </fieldset>
+    ${optionalSection}
   `;
 }
 
@@ -472,31 +1963,28 @@ function renderPropertyList(properties) {
   `;
 }
 
-function fillDemoData() {
-  [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS].forEach((field) => {
+function fillDemoData(includeOptional = false) {
+  const demo = includeOptional ? DEMO_PROPERTY : DEMO_MANUAL_PERFECT;
+  const fields = includeOptional ? [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS] : REQUIRED_FIELDS;
+  fields.forEach((field) => {
     const el = document.getElementById(field);
-    if (el) el.value = DEMO_PROPERTY[field] || '';
+    if (el) el.value = demo[field] || '';
   });
 }
 
-function handleAddProperty(e) {
-  e.preventDefault();
-  const form = e.target;
+function collectPropertyFromForm(form, includeOptional = false) {
   const property = {};
-  [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS].forEach((field) => {
+  const fields = includeOptional ? [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS] : REQUIRED_FIELDS;
+  fields.forEach((field) => {
     property[field] = form.elements[field]?.value?.trim() || '';
   });
-
-  draftPortfolio.properties.push(property);
-  state.draftPortfolio = draftPortfolio;
-  saveState(state);
-  renderAddProperty();
+  return property;
 }
 
 function finishPortfolio() {
   state.portfolio = {
     name: draftPortfolio.name,
-    properties: [...draftPortfolio.properties],
+    properties: enrichProperties(draftPortfolio.properties),
     createdAt: new Date().toISOString(),
   };
   draftPortfolio = { name: '', properties: [] };
@@ -505,32 +1993,32 @@ function finishPortfolio() {
   navigate('/portfolio/summary');
 }
 
+function processCsvText(text) {
+  const result = parseCsvDetailed(text);
+  pendingBulkImport = result;
+
+  if (result.validCount === 0) {
+    renderUploadCsv();
+    return;
+  }
+
+  if (result.invalidCount === 0) {
+    finalizeBulkImport(result.validProperties);
+    return;
+  }
+
+  renderUploadCsv();
+}
+
 function setupCsvUpload() {
   const zone = document.getElementById('upload-zone');
   const input = document.getElementById('csv-input');
-  const result = document.getElementById('upload-result');
 
   const handleFile = (file) => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
-      const properties = parseCsv(event.target.result);
-      if (!properties.length) {
-        result.innerHTML = '<div class="alert" style="margin-top:16px;background:#fde8ec;color:#8a1530;border:1px solid #f5c2cb;">No valid properties found. Check your CSV has the required columns and at least one data row.</div>';
-        return;
-      }
-      draftPortfolio.properties = properties;
-      state.draftPortfolio = draftPortfolio;
-      state.portfolio = {
-        name: draftPortfolio.name,
-        properties: [...properties],
-        createdAt: new Date().toISOString(),
-      };
-      draftPortfolio = { name: '', properties: [] };
-      state.draftPortfolio = draftPortfolio;
-      saveState(state);
-      result.innerHTML = `<div class="alert alert-success" style="margin-top:16px;">Successfully imported <strong>${properties.length}</strong> properties.</div>`;
-      setTimeout(() => navigate('/portfolio/summary'), 800);
+      processCsvText(event.target.result);
     };
     reader.readAsText(file);
   };
@@ -548,37 +2036,24 @@ function setupCsvUpload() {
   });
 }
 
-async function loadSampleCsv() {
-  const response = await fetch('assets/portfolio-sample.csv');
+async function loadSampleCsv(type = 'perfect') {
+  const file = type === 'errors' ? 'portfolio-sample-errors.csv' : 'portfolio-sample-perfect.csv';
+  const response = await fetch(`assets/${file}`);
   const text = await response.text();
-  const properties = parseCsv(text);
-  draftPortfolio.properties = properties;
-  state.draftPortfolio = draftPortfolio;
-  state.portfolio = {
-    name: draftPortfolio.name,
-    properties: [...properties],
-    createdAt: new Date().toISOString(),
-  };
-  draftPortfolio = { name: '', properties: [] };
-  state.draftPortfolio = draftPortfolio;
-  saveState(state);
-  navigate('/portfolio/summary');
+  processCsvText(text);
 }
 
 function bindCommonActions() {
   document.querySelector('[data-action="logout"]')?.addEventListener('click', () => {
-    state = { loggedIn: false, portfolio: state.portfolio, draftPortfolio: null };
+    state = {
+      accessGranted: state.accessGranted,
+      loggedIn: false,
+      portfolio: state.portfolio,
+      draftPortfolio: null,
+    };
     saveState(state);
     navigate('/login');
   });
-}
-
-function totalRent(properties) {
-  return properties.reduce((sum, p) => sum + (Number(p.monthlyRent) || 0), 0);
-}
-
-function totalMortgagePayments(properties) {
-  return properties.reduce((sum, p) => sum + (Number(p.monthlyPayments) || 0), 0);
 }
 
 function escapeHtml(str) {
@@ -590,8 +2065,21 @@ function escapeHtml(str) {
 }
 
 function render() {
+  if (!state.accessGranted) {
+    renderAccessGate();
+    return;
+  }
+
+  document.title = PAGE_TITLES.app;
+
   const route = getRoute();
   if (!requireAuth(route)) return;
+
+  const parsed = parseRoute(route);
+  if (parsed.type === 'property') {
+    renderPropertyDetail(parsed.index, parsed.tab);
+    return;
+  }
 
   switch (route) {
     case '/login':
@@ -619,6 +2107,9 @@ function render() {
       break;
     case '/portfolio/summary':
       renderSummary();
+      break;
+    case '/portfolio/summary/add':
+      renderSummaryAddProperty();
       break;
     default:
       navigate(state.loggedIn ? '/dashboard' : '/login');
