@@ -115,11 +115,33 @@ function renderLbgApplyButton() {
   `;
 }
 
-const RENTAL_EVIDENCE_REPORT_URL = 'assets/sheffield-rental-evidence-report.pdf';
+const RENTAL_EVIDENCE_REPORT_PATH = 'assets/sheffield-rental-evidence-report.pdf';
+
+function resolveAssetUrl(relativePath) {
+  const normalized = String(relativePath || '').replace(/^\//, '');
+  const { origin, pathname } = window.location;
+  let basePath = pathname;
+
+  if (!basePath.endsWith('/')) {
+    const lastSegment = basePath.slice(basePath.lastIndexOf('/') + 1);
+    basePath = lastSegment.includes('.')
+      ? basePath.slice(0, basePath.lastIndexOf('/') + 1)
+      : `${basePath}/`;
+  }
+
+  return `${origin}${basePath}${normalized}`;
+}
 
 function renderDataloftReportButton() {
+  const reportUrl = resolveAssetUrl(RENTAL_EVIDENCE_REPORT_PATH);
   return `
-    <a class="btn btn-apply btn-order-report" href="${RENTAL_EVIDENCE_REPORT_URL}" target="_blank" rel="noopener noreferrer">
+    <a
+      class="btn btn-apply btn-order-report"
+      href="${escapeHtml(reportUrl)}"
+      target="_blank"
+      rel="noopener noreferrer"
+      data-action="open-rental-report"
+    >
       <span class="btn-apply__logo">
         <img src="assets/dataloft-logo.png" alt="" class="btn-order-report__logo" width="120" height="40">
       </span>
@@ -2269,6 +2291,15 @@ function renderPropertyRentReview(index) {
   `;
 
   bindCommonActions();
+  bindRentalEvidenceReport();
+}
+
+function bindRentalEvidenceReport() {
+  document.querySelector('[data-action="open-rental-report"]')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    const reportUrl = resolveAssetUrl(RENTAL_EVIDENCE_REPORT_PATH);
+    window.open(reportUrl, '_blank', 'noopener,noreferrer');
+  });
 }
 
 function renderPropertyEpcImprovement(index) {
