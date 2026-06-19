@@ -2663,29 +2663,22 @@ function bindPasscodeInputs() {
 
 function renderLogin() {
   app.innerHTML = `
+    <div class="demo-banner demo-banner--login">Demonstration prototype — not a live banking service. Hosted by WhenFresh for RFP presentation. No credentials are collected.</div>
     <div class="login-page">
       <div class="login-hero">
         ${LBG_LOGO.replace('fill="black"', 'fill="white"').replace('fill="#006A4A"', 'fill="#9fd4b8"')}
         <h1>Investor Landlord Portal</h1>
-        <p>Manage your buy-to-let portfolio, track tenancies and mortgage details in one secure place.</p>
+        <p>Demonstration of a buy-to-let portfolio experience. Branding is illustrative only — this is not lloydsbank.com or any live bank website.</p>
       </div>
       <div class="login-panel">
         <div class="login-card">
-          <h2>Sign in</h2>
-          <p class="hint">Enter your credentials to access your portfolio dashboard.</p>
+          <h2>Enter demo</h2>
+          <p class="hint">This prototype uses click-through access only. There is no real sign-in and nothing you enter is transmitted or stored.</p>
           <form id="login-form">
-            <div class="form-group">
-              <label for="username">User ID or email</label>
-              <input id="username" name="username" type="text" value="demo.landlord@email.com" autocomplete="username">
-            </div>
-            <div class="form-group">
-              <label for="password">Password</label>
-              <input id="password" name="password" type="password" value="••••••••" autocomplete="current-password">
-            </div>
-            <button type="submit" class="btn btn-primary">Log in</button>
+            <button type="submit" class="btn btn-primary">Continue to demo</button>
           </form>
           <div class="login-demo-note">
-            <strong>Demo mode:</strong> Click <em>Log in</em> to continue — no real authentication is required.
+            <strong>Safe to explore:</strong> All portfolio data is fictional and runs entirely in your browser.
           </div>
         </div>
       </div>
