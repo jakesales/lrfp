@@ -21,6 +21,33 @@ import {
   formatMortgageExpiry,
   getDemoFinancials,
   applyFinancialsToProperty,
+  getPropertyTenancies,
+  getAchievedRentTotal,
+  syncAchievedRentFromTenancies,
+  getMortgageProductType,
+  getDemoTenancies,
+  getDemoSingleTenancy,
+  applyFinancialDemoScenario,
+  MORTGAGE_PRODUCT_TYPES,
+  TENANCY_AGREEMENT_TYPES,
+  getQualifiedMarketplaceListings,
+  getPortfolioMarketOpportunities,
+  getMarketplaceListingById,
+  buildMortgageQuote,
+  buildRefinanceQuote,
+  buildRentReviewQuote,
+  computePortfolioMetricsAfterPurchase,
+  computePortfolioMetricsAfterRefinance,
+  computePortfolioMetricsAfterRentReview,
+  getPortfolioRefinanceOpportunities,
+  getPortfolioRentReviewOpportunities,
+  hasRefinanceOpportunity,
+  hasRentReviewOpportunity,
+  getCurrentBestMortgageRate,
+  REFINANCE_RATE_THRESHOLD,
+  RENT_REVIEW_GAP_THRESHOLD,
+  OPPORTUNITY_EQUITY_THRESHOLD,
+  MARKETPLACE_MAX_ASKING_PRICE,
   loadState,
   saveState,
   isAccessCodeValid,
@@ -37,7 +64,6 @@ const PROPERTY_TABS = [
   { id: 'risk', label: 'Risk assessment' },
   { id: 'esg', label: 'ESG & Renovation' },
   { id: 'market-trends', label: 'Market trends' },
-  { id: 'neighbourhood', label: 'Neighbourhood' },
   { id: 'market-demand', label: 'Market demand' },
 ];
 
@@ -72,6 +98,16 @@ function getRoute() {
 }
 
 function parseRoute(route) {
+  const refinanceQuoteMatch = route.match(/^\/portfolio\/property\/(\d+)\/refinance-quote$/);
+  if (refinanceQuoteMatch) {
+    return { type: 'refinance-quote', index: Number(refinanceQuoteMatch[1]) };
+  }
+
+  const rentReviewMatch = route.match(/^\/portfolio\/property\/(\d+)\/rent-review$/);
+  if (rentReviewMatch) {
+    return { type: 'rent-review', index: Number(rentReviewMatch[1]) };
+  }
+
   const propertyMatch = route.match(/^\/portfolio\/property\/(\d+)(?:\/([a-z-]+))?$/);
   if (propertyMatch) {
     return {
@@ -80,6 +116,12 @@ function parseRoute(route) {
       tab: propertyMatch[2] || 'overview',
     };
   }
+
+  const quoteMatch = route.match(/^\/portfolio\/marketplace\/quote\/([a-z0-9-]+)$/);
+  if (quoteMatch) {
+    return { type: 'marketplace-quote', listingId: quoteMatch[1] };
+  }
+
   return { type: 'standard', route };
 }
 
@@ -216,6 +258,141 @@ function propertyDemoSeed(property) {
   };
 }
 
+function getPropertyOverviewDetails(property) {
+  const seed = propertyDemoSeed(property);
+  return {
+    propertyType: property.propertyType ?? seed.propertyType,
+    bedrooms: property.bedrooms ?? seed.bedrooms,
+    epcRating: property.epcRating ?? seed.epcRating,
+    epcPotential: property.epcPotential ?? seed.epcPotential,
+    sqft: property.sqft ?? seed.sqft,
+    builtYear: property.builtYear ?? seed.builtYear,
+    leasehold: property.leasehold ?? seed.leasehold,
+    floors: property.floors ?? seed.floors,
+    floorNumber: property.floorNumber ?? seed.floorNumber,
+    newBuilding: property.newBuilding ?? seed.newBuilding,
+    occupancy: property.occupancy ?? property.tenancyStatus ?? '',
+    rentPerSqft: seed.rentPerSqft,
+  };
+}
+
+function formatTenancyDate(value) {
+  if (!value) return '—';
+  const date = new Date(String(value).trim());
+  if (Number.isNaN(date.getTime())) return escapeHtml(String(value));
+  return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function renderSelectOptions(options, selectedValue, includeBlank = true) {
+  const blank = includeBlank ? '<option value="">Select…</option>' : '';
+  return blank + options.map((option) => `
+    <option value="${escapeHtml(option)}"${option === selectedValue ? ' selected' : ''}>${escapeHtml(option)}</option>
+  `).join('');
+}
+
+function renderOverviewEditModal(property, details) {
+  return `
+    <div class="modal" id="overview-edit-modal" hidden>
+      <div class="modal__backdrop" data-action="close-overview-edit"></div>
+      <div class="modal__panel" role="dialog" aria-labelledby="overview-edit-title" aria-modal="true">
+        <h2 class="modal__title" id="overview-edit-title">Edit key information</h2>
+        <p class="modal__intro">Update the property characteristics held against this asset.</p>
+        <form id="overview-edit-form" class="modal__form">
+          <div class="form-grid form-grid--2">
+            <div class="form-field">
+              <label for="ov-property-type">Property type</label>
+              <select id="ov-property-type" name="propertyType">${renderSelectOptions(['House', 'Flat', 'Apartment', 'HMO'], details.propertyType)}</select>
+            </div>
+            <div class="form-field">
+              <label for="ov-bedrooms">Bedrooms</label>
+              <input type="number" id="ov-bedrooms" name="bedrooms" min="0" value="${escapeHtml(String(details.bedrooms))}">
+            </div>
+            <div class="form-field">
+              <label for="ov-epc-current">Current EPC rating</label>
+              <select id="ov-epc-current" name="epcRating">${renderSelectOptions(['A', 'B', 'C', 'D', 'E', 'F', 'G'], details.epcRating)}</select>
+            </div>
+            <div class="form-field">
+              <label for="ov-epc-potential">Potential EPC rating</label>
+              <select id="ov-epc-potential" name="epcPotential">${renderSelectOptions(['A', 'B', 'C', 'D', 'E', 'F', 'G'], details.epcPotential)}</select>
+            </div>
+            <div class="form-field">
+              <label for="ov-sqft">Net living area (sq.ft)</label>
+              <input type="number" id="ov-sqft" name="sqft" min="0" value="${escapeHtml(String(details.sqft))}">
+            </div>
+            <div class="form-field">
+              <label for="ov-built-year">Year built</label>
+              <input type="number" id="ov-built-year" name="builtYear" min="1600" max="2100" value="${escapeHtml(String(details.builtYear))}">
+            </div>
+            <div class="form-field">
+              <label for="ov-leasehold">Leasehold</label>
+              <select id="ov-leasehold" name="leasehold">${renderSelectOptions(['yes', 'no'], details.leasehold, false)}</select>
+            </div>
+            <div class="form-field">
+              <label for="ov-floors">Number of floors</label>
+              <input type="number" id="ov-floors" name="floors" min="1" value="${escapeHtml(String(details.floors))}">
+            </div>
+            <div class="form-field">
+              <label for="ov-floor-number">Floor number</label>
+              <input type="number" id="ov-floor-number" name="floorNumber" min="0" value="${escapeHtml(String(details.floorNumber))}">
+            </div>
+            <div class="form-field">
+              <label for="ov-new-building">New build</label>
+              <select id="ov-new-building" name="newBuilding">${renderSelectOptions(['yes', 'no'], details.newBuilding, false)}</select>
+            </div>
+            <div class="form-field">
+              <label for="ov-occupancy">Occupancy status</label>
+              <select id="ov-occupancy" name="occupancy">${renderSelectOptions(['Let', 'Vacant', 'Under offer', 'Notice served'], details.occupancy === 'Rented' ? 'Let' : details.occupancy)}</select>
+            </div>
+          </div>
+          <div class="modal__actions">
+            <button type="button" class="btn btn-tertiary" data-action="close-overview-edit">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function bindOverviewEdit(index) {
+  const modal = document.getElementById('overview-edit-modal');
+  const form = document.getElementById('overview-edit-form');
+  if (!modal || !form) return;
+
+  const open = () => { modal.hidden = false; };
+  const close = () => { modal.hidden = true; };
+
+  document.querySelector('[data-action="open-overview-edit"]')?.addEventListener('click', open);
+  modal.querySelectorAll('[data-action="close-overview-edit"]').forEach((el) => {
+    el.addEventListener('click', close);
+  });
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const portfolio = state.portfolio;
+    if (!portfolio?.properties[index]) return;
+
+    const data = new FormData(form);
+    const property = portfolio.properties[index];
+    property.propertyType = String(data.get('propertyType') || '').trim();
+    property.bedrooms = Number(data.get('bedrooms')) || 0;
+    property.epcRating = String(data.get('epcRating') || '').trim();
+    property.epcPotential = String(data.get('epcPotential') || '').trim();
+    property.sqft = Number(data.get('sqft')) || 0;
+    property.builtYear = Number(data.get('builtYear')) || 0;
+    property.leasehold = String(data.get('leasehold') || '').trim();
+    property.floors = Number(data.get('floors')) || 0;
+    property.floorNumber = Number(data.get('floorNumber')) || 0;
+    property.newBuilding = String(data.get('newBuilding') || '').trim();
+    property.occupancy = String(data.get('occupancy') || '').trim();
+    property.tenancyStatus = property.occupancy;
+
+    saveState(state);
+    close();
+    render();
+  });
+}
+
 function requireAuth(route) {
   if (!state.loggedIn && route !== '/login') {
     navigate('/login');
@@ -245,6 +422,54 @@ function renderHeader(showNav = true) {
     </header>
     <div class="demo-banner">Demonstration prototype — not a live banking service. All data is fictional.</div>
   `;
+}
+
+const INFO_TOOLTIP_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v5M12 8h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+function renderInfoTooltip(text) {
+  return `
+    <span class="info-tooltip">
+      <button type="button" class="info-tooltip__trigger" aria-label="More information">${INFO_TOOLTIP_ICON}</button>
+      <span class="info-tooltip__content" role="tooltip">${escapeHtml(text)}</span>
+    </span>
+  `;
+}
+
+function renderRemovePropertyModal(property) {
+  return `
+    <div class="modal" id="remove-property-modal" hidden>
+      <div class="modal__backdrop" data-action="close-remove-property"></div>
+      <div class="modal__panel" role="dialog" aria-labelledby="remove-property-title" aria-modal="true">
+        <h2 class="modal__title" id="remove-property-title">Remove property from portfolio</h2>
+        <p class="modal__intro">Are you sure you want to remove <strong>${escapeHtml(property.titleRef)}</strong> — ${escapeHtml(formatAddress(property))} — from this portfolio? This action cannot be undone.</p>
+        <div class="modal__actions">
+          <button type="button" class="btn btn-secondary" data-action="close-remove-property">Cancel</button>
+          <button type="button" class="btn btn-danger" data-action="confirm-remove-property">Remove property</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindRemoveProperty(index) {
+  const modal = document.getElementById('remove-property-modal');
+  if (!modal) return;
+
+  const open = () => { modal.hidden = false; };
+  const close = () => { modal.hidden = true; };
+
+  document.querySelector('[data-action="open-remove-property"]')?.addEventListener('click', open);
+  modal.querySelectorAll('[data-action="close-remove-property"]').forEach((el) => {
+    el.addEventListener('click', close);
+  });
+  modal.querySelector('[data-action="confirm-remove-property"]')?.addEventListener('click', () => {
+    const portfolio = state.portfolio;
+    if (!portfolio || index < 0 || index >= portfolio.properties.length) return;
+    portfolio.properties.splice(index, 1);
+    saveState(state);
+    close();
+    navigate('/portfolio/summary');
+  });
 }
 
 function renderMissingIndicator() {
@@ -336,19 +561,19 @@ function renderPropertyHero(property) {
       <div class="property-hero__metrics">
         <div class="property-hero__metric">
           <span class="property-hero__metric-value">${renderLineCurrencyPlain(property.avmValue)}</span>
-          <span class="property-hero__metric-label">Property value (AVM)</span>
+          <span class="property-hero__metric-label">Estimated market value</span>
         </div>
         <div class="property-hero__metric">
           <span class="property-hero__metric-value">${renderLineCurrency(property.marketRent)}</span>
-          <span class="property-hero__metric-label">Market rent (Rent AVM)</span>
+          <span class="property-hero__metric-label">Market rent</span>
         </div>
         <div class="property-hero__metric">
           <span class="property-hero__metric-value">${renderRentAgreedDisplay(property.rentAgreed)}</span>
-          <span class="property-hero__metric-label">Rent agreed</span>
+          <span class="property-hero__metric-label">Achieved rent</span>
         </div>
         <div class="property-hero__metric">
           <span class="property-hero__metric-value">${grossYield != null ? formatPercent(grossYield) : '—'}</span>
-          <span class="property-hero__metric-label">Gross yield (market)</span>
+          <span class="property-hero__metric-label">Gross yield</span>
         </div>
       </div>
     </section>
@@ -441,7 +666,7 @@ function renderPropertyToolbar(index, activeTabId) {
     <div class="property-toolbar">
       <a class="property-back" href="#/portfolio/summary">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Back
+        Back to portfolio
       </a>
       <nav class="property-tabs" aria-label="Property sections">
         <div class="property-tabs__scroll">
@@ -460,9 +685,10 @@ function renderPropertyToolbar(index, activeTabId) {
 
 function renderPropertyOverviewTab(property) {
   const seed = propertyDemoSeed(property);
+  const details = getPropertyOverviewDetails(property);
   const marketRent = Number(property.marketRent) || 0;
   const avm = Number(property.avmValue) || 0;
-  const rentAgreed = Number(property.rentAgreed) || 0;
+  const rentAgreed = getAchievedRentTotal(property);
   const rentPcm = rentAgreed > 0 ? rentAgreed : marketRent;
   const suggestedRent = marketRent;
 
@@ -475,30 +701,26 @@ function renderPropertyOverviewTab(property) {
             <h2 class="overview-section__title">Key information</h2>
           </div>
           <div class="overview-section__actions">
-            <button type="button" class="overview-action-btn" disabled>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12M12 15l4-4M8 11l4 4M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-              Share
-            </button>
-            <button type="button" class="overview-action-btn" disabled>
+            <button type="button" class="overview-action-btn" data-action="open-overview-edit">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
               Edit
             </button>
-            ${renderOccupancyBadge(property.occupancy)}
+            ${renderOccupancyBadge(details.occupancy)}
           </div>
         </div>
 
         <p class="overview-address">${escapeHtml(formatOverviewAddress(property))}</p>
 
         <div class="overview-attrs">
-          ${renderOverviewAttr('Type', escapeHtml(seed.propertyType))}
-          ${renderOverviewAttr('Number of bedrooms', seed.bedrooms)}
-          ${renderOverviewAttr('Current → Potential EPC', `${seed.epcRating} → ${seed.epcPotential}`)}
-          ${renderOverviewAttr('Net living area (sq.ft)', seed.sqft.toLocaleString('en-GB'))}
-          ${renderOverviewAttr('Built', seed.builtYear)}
-          ${renderOverviewAttr('Leasehold?', seed.leasehold)}
-          ${renderOverviewAttr('Number of floors', seed.floors)}
-          ${renderOverviewAttr('Floor number', seed.floorNumber)}
-          ${renderOverviewAttr('New building', seed.newBuilding)}
+          ${renderOverviewAttr('Type', escapeHtml(details.propertyType))}
+          ${renderOverviewAttr('Number of bedrooms', details.bedrooms)}
+          ${renderOverviewAttr('Current → Potential EPC', `${details.epcRating} → ${details.epcPotential}`)}
+          ${renderOverviewAttr('Net living area (sq.ft)', Number(details.sqft).toLocaleString('en-GB'))}
+          ${renderOverviewAttr('Built', details.builtYear)}
+          ${renderOverviewAttr('Leasehold?', details.leasehold)}
+          ${renderOverviewAttr('Number of floors', details.floors)}
+          ${renderOverviewAttr('Floor number', details.floorNumber)}
+          ${renderOverviewAttr('New building', details.newBuilding)}
         </div>
       </section>
 
@@ -517,7 +739,7 @@ function renderPropertyOverviewTab(property) {
           </div>
           <div class="overview-metric">
             <span class="overview-metric__label">Rent per sq.ft</span>
-            <span class="overview-metric__value">${marketRent > 0 ? `£${seed.rentPerSqft}` : '—'}</span>
+            <span class="overview-metric__value">${marketRent > 0 ? `£${details.rentPerSqft}` : '—'}</span>
           </div>
           <div class="overview-metric">
             <span class="overview-metric__label">Market rent</span>
@@ -583,12 +805,119 @@ function renderPropertyOverviewTab(property) {
         </div>
         ${renderOverviewTrendChart(seed.saleTrend)}
       </section>
+
+      <div class="property-overview-actions">
+        <button type="button" class="btn btn-tertiary btn-sm property-overview-actions__remove" data-action="open-remove-property">Remove from portfolio</button>
+      </div>
+    </div>
+    ${renderOverviewEditModal(property, details)}
+  `;
+}
+
+function renderTenancyTable(tenancies) {
+  if (!tenancies.length) {
+    return '<p class="tenancy-empty">No individual tenancies recorded. Use Edit to add room-level income for HMO properties.</p>';
+  }
+
+  return `
+    <div class="data-table-wrap">
+      <table class="data-table tenancy-table">
+        <thead>
+          <tr>
+            <th>Room</th>
+            <th>Tenant</th>
+            <th>Start date</th>
+            <th>End date</th>
+            <th>Monthly rent</th>
+            <th>Agreement type</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tenancies.map((tenancy) => `
+            <tr>
+              <td>${escapeHtml(tenancy.roomNumber || '—')}</td>
+              <td>${escapeHtml(tenancy.tenantName || '—')}</td>
+              <td>${formatTenancyDate(tenancy.startDate)}</td>
+              <td>${formatTenancyDate(tenancy.endDate)}</td>
+              <td>${hasDisplayValue(tenancy.monthlyRent) ? `${formatCurrency(tenancy.monthlyRent)}<span class="cell-suffix">/mo</span>` : '—'}</td>
+              <td>${escapeHtml(tenancy.agreementType || '—')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderTenancyEditRow(tenancy = {}, index = 0) {
+  return `
+    <fieldset class="tenancy-edit-row" data-tenancy-row="${index}">
+      <legend class="tenancy-edit-row__legend">Tenancy ${index + 1}</legend>
+      <div class="form-grid form-grid--3">
+        <div class="form-field">
+          <label>Room number</label>
+          <input type="text" name="roomNumber" value="${escapeHtml(tenancy.roomNumber || '')}" placeholder="e.g. 1">
+        </div>
+        <div class="form-field">
+          <label>Tenant name</label>
+          <input type="text" name="tenantName" value="${escapeHtml(tenancy.tenantName || '')}" placeholder="e.g. J. Smith">
+        </div>
+        <div class="form-field">
+          <label>Monthly rent (£)</label>
+          <input type="text" name="monthlyRent" inputmode="decimal" value="${escapeHtml(tenancy.monthlyRent || '')}" placeholder="e.g. 650">
+        </div>
+        <div class="form-field">
+          <label>Start date</label>
+          <input type="date" name="startDate" value="${escapeHtml(tenancy.startDate || '')}">
+        </div>
+        <div class="form-field">
+          <label>End date</label>
+          <input type="date" name="endDate" value="${escapeHtml(tenancy.endDate || '')}">
+        </div>
+        <div class="form-field">
+          <label>Agreement type</label>
+          <select name="agreementType">${renderSelectOptions(TENANCY_AGREEMENT_TYPES, tenancy.agreementType || 'Assured shorthold')}</select>
+        </div>
+      </div>
+      <button type="button" class="btn-link tenancy-edit-row__remove" data-action="remove-tenancy-row">Remove tenancy</button>
+    </fieldset>
+  `;
+}
+
+function renderTenancyEditModal(property) {
+  const tenancies = getPropertyTenancies(property);
+
+  return `
+    <div class="modal" id="tenancy-edit-modal" hidden>
+      <div class="modal__backdrop" data-action="close-tenancy-edit"></div>
+      <div class="modal__panel modal__panel--wide" role="dialog" aria-labelledby="tenancy-edit-title" aria-modal="true">
+        <h2 class="modal__title" id="tenancy-edit-title">Edit achieved rent</h2>
+        <p class="modal__intro">Record individual tenancies for HMO and multi-let properties. Total achieved rent is calculated from the monthly rents entered below.</p>
+        <form id="tenancy-edit-form" class="modal__form">
+          <div id="tenancy-edit-rows" class="tenancy-edit-rows">
+            ${tenancies.length
+    ? tenancies.map((tenancy, index) => renderTenancyEditRow(tenancy, index)).join('')
+    : renderTenancyEditRow({}, 0)}
+          </div>
+          <div class="tenancy-edit-actions">
+            <button type="button" class="btn btn-secondary" data-action="add-tenancy-row">Add tenancy</button>
+            <button type="button" class="btn btn-tertiary" data-action="prefill-tenancy-single">Prefill single tenancy</button>
+            <button type="button" class="btn btn-tertiary" data-action="prefill-tenancy-hmo">Prefill HMO</button>
+          </div>
+          <div class="modal__actions">
+            <button type="button" class="btn btn-tertiary" data-action="close-tenancy-edit">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
     </div>
   `;
 }
 
 function renderPropertyFinancialsTab(property, index) {
   const fin = computePropertyFinancials(property);
+  const tenancies = getPropertyTenancies(property);
+  const mortgageProductType = getMortgageProductType(property);
 
   const currentValueHtml = renderFinancialOrMissing(
     fin.hasCurrentValue,
@@ -620,14 +949,27 @@ function renderPropertyFinancialsTab(property, index) {
     : renderMissingIndicator();
 
   const mortgageExpiryDisplay = formatMortgageExpiry(fin.mortgageExpiry);
+  const refinanceOpportunityHtml = renderFinancialRefinanceOpportunity(property, index);
+  const rentReviewOpportunityHtml = renderFinancialRentReviewOpportunity(property, index);
 
   return `
     <div class="property-tab-panel property-tab-panel--financials">
+      <div class="scenario-panel financial-demo-panel">
+        <p class="scenario-panel__label">Demo scenarios</p>
+        <div class="financial-demo-panel__actions">
+          <button type="button" class="btn btn-secondary btn-sm" data-action="prefill-financials-single">Prefill single tenancy</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="prefill-financials-hmo">Prefill HMO</button>
+        </div>
+      </div>
+
+      ${refinanceOpportunityHtml}
+      ${rentReviewOpportunityHtml}
+
       <section class="financial-section">
         <div class="financial-section__header">
           <div class="financial-section__title-wrap">
             <span class="financial-section__icon">${OVERVIEW_ICONS.financials}</span>
-            <h2 class="financial-section__title">Financials</h2>
+            <h2 class="financial-section__title">Mortgage &amp; value</h2>
           </div>
           <button type="button" class="financial-action-btn" data-action="open-financials-edit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
@@ -639,6 +981,7 @@ function renderPropertyFinancialsTab(property, index) {
           <div class="financial-grid__col">
             ${renderFinancialMetric('Purchase price', renderFinancialOrMissing(fin.hasPurchasePrice, () => `<strong>${formatCurrency(fin.purchasePrice)}</strong>`))}
             ${renderFinancialMetric('Remaining mortgage', renderFinancialOrMissing(fin.hasRemainingMortgage, () => `<strong>${formatCurrency(fin.remainingMortgage)}</strong>`))}
+            ${renderFinancialMetric('Mortgage product type', renderFinancialOrMissing(fin.hasMortgageProductType, () => `<strong>${escapeHtml(mortgageProductType)}</strong>`))}
             ${renderFinancialMetric('Mortgage expiry', renderFinancialOrMissing(fin.hasMortgageExpiry && !!mortgageExpiryDisplay, () => `<strong>${escapeHtml(mortgageExpiryDisplay || '')}</strong>`))}
             ${renderFinancialMetric('Bank', renderFinancialOrMissing(fin.hasBank, () => `<strong>${escapeHtml(fin.bank)}</strong>`))}
           </div>
@@ -646,22 +989,39 @@ function renderPropertyFinancialsTab(property, index) {
             ${renderFinancialMetric('Current value', currentValueHtml)}
             ${renderFinancialMetric('Value change', valueChangeHtml)}
             ${renderFinancialMetric('Interest rate', renderFinancialOrMissing(fin.hasInterestRate, () => `<strong>${fin.interestRate.toFixed(1)}%</strong>`))}
+            ${renderFinancialMetric('LTV', renderFinancialOrMissing(fin.hasLtv, () => `<strong>${fin.ltv.toFixed(0)}%</strong>`))}
           </div>
           <div class="financial-grid__col">
             ${renderFinancialMetric('Market rent', marketRentHtml)}
-            ${renderFinancialMetric('Rent agreed', rentAgreedHtml)}
-            ${renderFinancialMetric('LTV', renderFinancialOrMissing(fin.hasLtv, () => `<strong>${fin.ltv.toFixed(0)}%</strong>`))}
             ${renderFinancialMetric('Indicative refinancing rate', refinanceHtml)}
           </div>
         </div>
+      </section>
+
+      <section class="financial-section">
+        <div class="financial-section__header">
+          <div class="financial-section__title-wrap">
+            <span class="financial-section__icon">${OVERVIEW_ICONS.rent}</span>
+            <h2 class="financial-section__title">Achieved rent</h2>
+          </div>
+          <button type="button" class="financial-action-btn" data-action="open-tenancy-edit">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            Edit
+          </button>
+        </div>
+
+        <div class="achieved-rent-summary">
+          ${renderFinancialMetric('Total achieved rent', rentAgreedHtml)}
+        </div>
+        ${renderTenancyTable(tenancies)}
       </section>
     </div>
 
     <div class="modal" id="financials-edit-modal" hidden>
       <div class="modal__backdrop" data-action="close-financials-edit"></div>
       <div class="modal__panel" role="dialog" aria-labelledby="financials-edit-title" aria-modal="true">
-        <h2 class="modal__title" id="financials-edit-title">Edit financial details</h2>
-        <p class="modal__intro">Add your purchase, mortgage and tenancy details. Calculated fields will update automatically.</p>
+        <h2 class="modal__title" id="financials-edit-title">Edit mortgage &amp; value</h2>
+        <p class="modal__intro">Update purchase, mortgage and valuation details. Calculated fields will update automatically.</p>
         <form id="financials-edit-form" class="modal__form">
           <div class="form-field">
             <label for="fin-purchase-price">Purchase price (£)</label>
@@ -672,8 +1032,8 @@ function renderPropertyFinancialsTab(property, index) {
             <input type="text" id="fin-remaining-mortgage" name="remainingMortgage" inputmode="decimal" value="${escapeHtml(property.mortgageBalance || '')}" placeholder="e.g. 235000">
           </div>
           <div class="form-field">
-            <label for="fin-rent-agreed">Rent agreed (£/month)</label>
-            <input type="text" id="fin-rent-agreed" name="rentAgreed" inputmode="decimal" value="${escapeHtml(property.rentAgreed || '')}" placeholder="e.g. 1450">
+            <label for="fin-mortgage-product">Mortgage product type</label>
+            <select id="fin-mortgage-product" name="mortgageProductType">${renderSelectOptions(MORTGAGE_PRODUCT_TYPES, mortgageProductType)}</select>
           </div>
           <div class="form-field">
             <label for="fin-interest-rate">Interest rate (%)</label>
@@ -688,14 +1048,32 @@ function renderPropertyFinancialsTab(property, index) {
             <input type="month" id="fin-mortgage-expiry" name="mortgageExpiry" value="${escapeHtml(property.mortgageEndDate ? String(property.mortgageEndDate).slice(0, 7) : '')}">
           </div>
           <div class="modal__actions">
-            <button type="button" class="btn btn-secondary" data-action="prefill-financials-demo">Fill demo data</button>
             <button type="button" class="btn btn-tertiary" data-action="close-financials-edit">Cancel</button>
             <button type="submit" class="btn btn-primary">Save</button>
           </div>
         </form>
       </div>
     </div>
+    ${renderTenancyEditModal(property)}
   `;
+}
+
+function bindFinancialsDemoPrefill(index) {
+  document.querySelector('[data-action="prefill-financials-single"]')?.addEventListener('click', () => {
+    const property = state.portfolio?.properties[index];
+    if (!property) return;
+    applyFinancialDemoScenario(property, 'single', { propertyIndex: index });
+    saveState(state);
+    render();
+  });
+
+  document.querySelector('[data-action="prefill-financials-hmo"]')?.addEventListener('click', () => {
+    const property = state.portfolio?.properties[index];
+    if (!property) return;
+    applyFinancialDemoScenario(property, 'hmo', { propertyIndex: index });
+    saveState(state);
+    render();
+  });
 }
 
 function bindFinancialsEdit(index) {
@@ -714,7 +1092,8 @@ function bindFinancialsEdit(index) {
     const property = portfolio.properties[index];
     property.purchasePrice = String(data.get('purchasePrice') || '').trim();
     property.mortgageBalance = String(data.get('remainingMortgage') || '').trim();
-    property.rentAgreed = String(data.get('rentAgreed') || '').trim();
+    property.mortgageProductType = String(data.get('mortgageProductType') || '').trim();
+    property.productType = property.mortgageProductType;
     property.interestRate = String(data.get('interestRate') || '').trim();
     property.mortgageProvider = String(data.get('bank') || '').trim();
 
@@ -734,22 +1113,101 @@ function bindFinancialsEdit(index) {
     btn.addEventListener('click', close);
   });
 
-  document.querySelector('[data-action="prefill-financials-demo"]')?.addEventListener('click', () => {
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveFinancialsFromForm();
+  });
+}
+
+function bindTenancyEdit(index) {
+  const modal = document.getElementById('tenancy-edit-modal');
+  const form = document.getElementById('tenancy-edit-form');
+  const rowsContainer = document.getElementById('tenancy-edit-rows');
+  if (!modal || !form || !rowsContainer) return;
+
+  const open = () => { modal.hidden = false; };
+  const close = () => { modal.hidden = true; };
+
+  const reindexRows = () => {
+    rowsContainer.querySelectorAll('.tenancy-edit-row').forEach((row, rowIndex) => {
+      row.dataset.tenancyRow = String(rowIndex);
+      const legend = row.querySelector('.tenancy-edit-row__legend');
+      if (legend) legend.textContent = `Tenancy ${rowIndex + 1}`;
+    });
+  };
+
+  const addRow = (tenancy = {}) => {
+    const rowIndex = rowsContainer.querySelectorAll('.tenancy-edit-row').length;
+    rowsContainer.insertAdjacentHTML('beforeend', renderTenancyEditRow(tenancy, rowIndex));
+    reindexRows();
+  };
+
+  document.querySelector('[data-action="open-tenancy-edit"]')?.addEventListener('click', open);
+  modal.querySelectorAll('[data-action="close-tenancy-edit"]').forEach((el) => {
+    el.addEventListener('click', close);
+  });
+
+  modal.querySelector('[data-action="add-tenancy-row"]')?.addEventListener('click', () => addRow());
+
+  modal.querySelector('[data-action="prefill-tenancy-single"]')?.addEventListener('click', () => {
     const property = state.portfolio?.properties[index];
     if (!property) return;
+    rowsContainer.innerHTML = getDemoSingleTenancy(enrichPropertyWithAvm(property))
+      .map((tenancy, rowIndex) => renderTenancyEditRow(tenancy, rowIndex))
+      .join('');
+    reindexRows();
+  });
 
-    const demo = getDemoFinancials(enrichPropertyWithAvm(property));
-    form.purchasePrice.value = demo.purchasePrice;
-    form.remainingMortgage.value = demo.remainingMortgage;
-    form.rentAgreed.value = demo.rentAgreed;
-    form.interestRate.value = demo.interestRate;
-    form.bank.value = demo.bank;
-    if (form.mortgageExpiry) form.mortgageExpiry.value = demo.mortgageExpiry;
+  modal.querySelector('[data-action="prefill-tenancy-hmo"]')?.addEventListener('click', () => {
+    const property = state.portfolio?.properties[index];
+    if (!property) return;
+    rowsContainer.innerHTML = getDemoTenancies(enrichPropertyWithAvm(property))
+      .map((tenancy, rowIndex) => renderTenancyEditRow(tenancy, rowIndex))
+      .join('');
+    reindexRows();
+  });
+
+  rowsContainer.addEventListener('click', (event) => {
+    const removeBtn = event.target.closest('[data-action="remove-tenancy-row"]');
+    if (!removeBtn) return;
+    const rows = rowsContainer.querySelectorAll('.tenancy-edit-row');
+    if (rows.length <= 1) {
+      removeBtn.closest('.tenancy-edit-row')?.querySelectorAll('input, select').forEach((input) => {
+        if (input.tagName === 'SELECT') input.selectedIndex = 0;
+        else input.value = '';
+      });
+      return;
+    }
+    removeBtn.closest('.tenancy-edit-row')?.remove();
+    reindexRows();
   });
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    saveFinancialsFromForm();
+    const portfolio = state.portfolio;
+    if (!portfolio?.properties[index]) return;
+
+    const property = portfolio.properties[index];
+    const tenancies = [...rowsContainer.querySelectorAll('.tenancy-edit-row')].map((row) => ({
+      roomNumber: String(row.querySelector('[name="roomNumber"]')?.value || '').trim(),
+      tenantName: String(row.querySelector('[name="tenantName"]')?.value || '').trim(),
+      startDate: String(row.querySelector('[name="startDate"]')?.value || '').trim(),
+      endDate: String(row.querySelector('[name="endDate"]')?.value || '').trim(),
+      monthlyRent: String(row.querySelector('[name="monthlyRent"]')?.value || '').trim(),
+      agreementType: String(row.querySelector('[name="agreementType"]')?.value || '').trim(),
+    })).filter((tenancy) => (
+      tenancy.roomNumber
+      || tenancy.tenantName
+      || tenancy.monthlyRent
+      || tenancy.startDate
+      || tenancy.endDate
+    ));
+
+    property.tenancies = tenancies;
+    syncAchievedRentFromTenancies(property);
+    saveState(state);
+    close();
+    render();
   });
 }
 
@@ -996,37 +1454,6 @@ function renderPropertyMarketDemandTab(property) {
   `;
 }
 
-function renderPropertyNeighbourhoodTab(property) {
-  const seed = propertyDemoSeed(property);
-  const amenities = [
-    { label: 'Transport links', score: 'Strong' },
-    { label: 'Schools', score: 'Good' },
-    { label: 'Amenities', score: seed.bedrooms > 2 ? 'Very good' : 'Good' },
-    { label: 'Green space', score: 'Average' },
-  ];
-
-  return `
-    <div class="property-tab-panel">
-      <h2 class="property-tab-panel__title">Neighbourhood</h2>
-      <p class="property-tab-panel__intro">Location context for ${escapeHtml(property.postcode)} and surrounding ${escapeHtml(property.city)} area.</p>
-
-      <div class="neighbourhood-map" aria-hidden="true">
-        <div class="neighbourhood-map__pin"></div>
-        <p class="neighbourhood-map__label">${escapeHtml(property.city)} · ${escapeHtml(property.postcode)}</p>
-      </div>
-
-      <div class="detail-grid">
-        ${amenities.map((item) => `
-          <div class="insight-card">
-            <p class="insight-card__label">${escapeHtml(item.label)}</p>
-            <p class="insight-card__value insight-card__value--sm">${escapeHtml(item.score)}</p>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `;
-}
-
 function renderPropertyTabContent(property, tabId, index) {
   switch (tabId) {
     case 'financials':
@@ -1037,8 +1464,6 @@ function renderPropertyTabContent(property, tabId, index) {
       return renderPropertyEsgTab(property);
     case 'market-trends':
       return renderPropertyMarketTrendsTab(property);
-    case 'neighbourhood':
-      return renderPropertyNeighbourhoodTab(property);
     case 'market-demand':
       return renderPropertyMarketDemandTab(property);
     default:
@@ -1077,11 +1502,20 @@ function renderPropertyDetail(index, tabId) {
         </div>
       </div>
     </main>
+    ${renderRemovePropertyModal(property)}
     ${renderFooter()}
   `;
 
   bindCommonActions();
-  if (tab.id === 'financials') bindFinancialsEdit(index);
+  if (tab.id === 'financials') {
+    bindFinancialsEdit(index);
+    bindTenancyEdit(index);
+    bindFinancialsDemoPrefill(index);
+  }
+  if (tab.id === 'overview') {
+    bindRemoveProperty(index);
+    bindOverviewEdit(index);
+  }
   bindPropertyTabs();
 }
 
@@ -1093,47 +1527,673 @@ function bindPropertyTabs() {
   });
 }
 
+function formatCurrencyChange(value) {
+  if (value == null || Number.isNaN(value)) return '—';
+  const formatted = new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'GBP',
+    maximumFractionDigits: 0,
+  }).format(Math.abs(value));
+  if (value > 0) return `+${formatted}`;
+  if (value < 0) return `-${formatted}`;
+  return formatted;
+}
+
+function renderPortfolioMetric(label, value, options = {}) {
+  const toneClass = options.tone ? ` portfolio-metric__value--${options.tone}` : '';
+  const sub = options.sub ? `<div class="portfolio-metric__sub">${options.sub}</div>` : '';
+  return `
+    <div class="portfolio-metric${options.highlight ? ' portfolio-metric--highlight' : ''}">
+      <div class="portfolio-metric__value${toneClass}">${value}</div>
+      <div class="portfolio-metric__label">${escapeHtml(label)}</div>
+      ${sub}
+    </div>
+  `;
+}
+
+function renderPortfolioComparisonRow(label, beforeValue, afterValue) {
+  return `
+    <tr>
+      <th scope="row">${escapeHtml(label)}</th>
+      <td>${beforeValue}</td>
+      <td>${afterValue}</td>
+    </tr>
+  `;
+}
+
+function renderMortgageQuote(listingId) {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  const listing = getMarketplaceListingById(listingId);
+  if (!listing) {
+    navigate('/portfolio/marketplace');
+    return;
+  }
+
+  const beforeMetrics = computePortfolioMetrics(portfolio.properties);
+  if (!beforeMetrics.hasEquityData || beforeMetrics.totalEquity <= OPPORTUNITY_EQUITY_THRESHOLD) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  const quote = buildMortgageQuote(listing);
+  const afterMetrics = computePortfolioMetricsAfterPurchase(portfolio.properties, listing, quote);
+  const address = formatAddress(listing);
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell">
+      <div class="page-content">
+        <div class="breadcrumb">
+          <a href="#/dashboard">Dashboard</a> /
+          <a href="#/portfolio/summary">Portfolio summary</a> /
+          <a href="#/portfolio/marketplace">Marketplace</a> /
+          Mortgage quote
+        </div>
+        <h1 class="page-title">Indicative mortgage quote</h1>
+        <p class="page-intro">${escapeHtml(address)} · ${listing.bedrooms} bed ${escapeHtml(listing.propertyType.toLowerCase())}</p>
+
+        <div class="quote-layout">
+          <section class="card quote-summary">
+            <h2 class="section-title">Indicative terms</h2>
+            <dl class="quote-summary__grid">
+              <div class="quote-summary__item">
+                <dt>Asking price</dt>
+                <dd>${formatCurrency(quote.askingPrice)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Indicative deposit (${quote.depositPct}%)</dt>
+                <dd>${formatCurrency(quote.deposit)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Indicative loan amount</dt>
+                <dd>${formatCurrency(quote.loanAmount)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Indicative interest rate</dt>
+                <dd>${formatInterestRate(quote.interestRate)}</dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Estimated monthly payment</dt>
+                <dd>${formatCurrency(quote.monthlyPayment)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Estimated gross yield</dt>
+                <dd>${formatPercent(quote.grossYield)}</dd>
+              </div>
+            </dl>
+            <p class="quote-summary__note">Illustrative buy-to-let quote based on a ${quote.depositPct}% deposit and interest-only servicing at ${formatInterestRate(quote.interestRate)}. Subject to affordability, valuation and lending criteria.</p>
+          </section>
+
+          <section class="card quote-comparison">
+            <h2 class="section-title">Portfolio impact</h2>
+            <p class="quote-comparison__intro">Estimated effect on your portfolio summary if this acquisition completes.</p>
+            <div class="data-table-wrap">
+              <table class="data-table quote-comparison__table">
+                <thead>
+                  <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col">Current portfolio</th>
+                    <th scope="col">After purchase</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
+                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
+                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
+                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
+                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
+                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
+                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="btn-group">
+          <a class="btn btn-secondary" href="#/portfolio/marketplace">Back to marketplace</a>
+          <a class="btn btn-primary" href="#/portfolio/summary">Return to portfolio</a>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+}
+
+function renderFinancialRefinanceOpportunity(property, index) {
+  if (!hasRefinanceOpportunity(property)) return '';
+
+  const quote = buildRefinanceQuote(property);
+  const bestRateLabel = formatInterestRate(quote.bestRate);
+
+  return `
+    <section class="opportunities-section financial-opportunity-panel" aria-label="Refinance opportunity">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">Payment Saving Opportunity</h2>
+          ${renderInfoTooltip('Your current mortgage rate is more than 0.5% above the indicative best buy-to-let deal. Refinancing may reduce monthly servicing costs and improve portfolio interest coverage.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">
+          You may be paying <strong>${formatInterestRate(quote.currentRate)}</strong> — current best deals start from <strong>${bestRateLabel}</strong>.
+        </p>
+        <p class="opportunities-section__detail">
+          Indicative saving of ${formatCurrency(quote.monthlySavings)} per month if you refinance at ${bestRateLabel} on your remaining balance of ${formatCurrency(quote.loanAmount)}.
+        </p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/refinance-quote">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderFinancialRentReviewOpportunity(property, index) {
+  if (!hasRentReviewOpportunity(property)) return '';
+
+  const quote = buildRentReviewQuote(property);
+
+  return `
+    <section class="opportunities-section financial-opportunity-panel" aria-label="Rent review opportunity">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">Rent Opportunity</h2>
+          ${renderInfoTooltip('Estimated market rent is more than £500 per month above your recorded achieved rent. A rent review may help align income with current market conditions.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">
+          Achieved rent is <strong>${formatCurrency(quote.currentAchievedRent)}</strong> — estimated market rent is <strong>${formatCurrency(quote.marketRent)}</strong>.
+        </p>
+        <p class="opportunities-section__detail">
+          Potential uplift of ${formatCurrency(quote.monthlyUplift)} per month (${formatCurrency(quote.annualUplift)} annually) if rent is brought in line with market levels.
+        </p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/rent-review">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderMarketplaceOpportunitySection(metrics, portfolio) {
+  if (!metrics.hasEquityData || metrics.totalEquity <= OPPORTUNITY_EQUITY_THRESHOLD) return '';
+
+  const opportunities = getPortfolioMarketOpportunities(portfolio.properties);
+  if (opportunities.count === 0) return '';
+
+  const areaLabel = opportunities.cities.length === 1
+    ? opportunities.cities[0]
+    : 'your portfolio areas';
+  const maxPriceLabel = formatCurrency(MARKETPLACE_MAX_ASKING_PRICE);
+
+  return `
+    <section class="opportunities-section" aria-label="Investment opportunities">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">Investment Opportunity</h2>
+          ${renderInfoTooltip('Investment opportunities identified in markets where you already hold assets. Available equity may be used as a deposit to support leveraged buy-to-let acquisitions.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">
+          <strong>${opportunities.count}</strong> ${opportunities.count === 1 ? 'property is' : 'properties are'} available for sale in ${escapeHtml(areaLabel)} with estimated gross yields above 5%.
+        </p>
+        <p class="opportunities-section__detail">
+          Based on your available equity, you may wish to review buy-to-let listings priced at ${maxPriceLabel} or below.
+        </p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/marketplace">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderRefinanceOpportunitySection(portfolio) {
+  const refinanceOpportunities = getPortfolioRefinanceOpportunities(portfolio.properties);
+  if (refinanceOpportunities.length === 0) return '';
+
+  const bestRateLabel = formatInterestRate(getCurrentBestMortgageRate());
+  const first = refinanceOpportunities[0];
+  const firstAddress = formatAddress(first.property);
+
+  let message;
+  if (refinanceOpportunities.length === 1) {
+    message = `<strong>${escapeHtml(firstAddress)}</strong> may be paying above the current best mortgage rate of ${bestRateLabel}.`;
+  } else {
+    message = `<strong>${refinanceOpportunities.length}</strong> properties may be paying more than ${REFINANCE_RATE_THRESHOLD}% above the current best mortgage rate of ${bestRateLabel}.`;
+  }
+
+  const detail = refinanceOpportunities.length === 1
+    ? `Your recorded rate is ${formatInterestRate(first.quote.currentRate)} — review refinancing options on the financials tab.`
+    : `Start with ${escapeHtml(firstAddress)} (${formatInterestRate(first.quote.currentRate)}), then review other qualifying properties.`;
+
+  return `
+    <section class="opportunities-section" aria-label="Refinance opportunities">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">Payment Saving Opportunity</h2>
+          ${renderInfoTooltip('Properties where the recorded mortgage rate is more than 0.5% above the indicative best buy-to-let deal may benefit from refinancing.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">${message}</p>
+        <p class="opportunities-section__detail">${detail}</p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/financials">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderRentReviewOpportunitySection(portfolio) {
+  const rentReviewOpportunities = getPortfolioRentReviewOpportunities(portfolio.properties);
+  if (rentReviewOpportunities.length === 0) return '';
+
+  const first = rentReviewOpportunities[0];
+  const firstAddress = formatAddress(first.property);
+
+  return `
+    <section class="opportunities-section" aria-label="Rent review opportunities">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">Rent Opportunity</h2>
+          ${renderInfoTooltip('Properties where estimated market rent exceeds achieved rent by more than £500 per month may benefit from a rent review.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">
+          <strong>${escapeHtml(firstAddress)}</strong> may be under-rented by more than ${formatCurrency(RENT_REVIEW_GAP_THRESHOLD)} per month.
+        </p>
+        <p class="opportunities-section__detail">
+          Achieved rent is ${formatCurrency(first.quote.currentAchievedRent)} against an estimated market rent of ${formatCurrency(first.quote.marketRent)} — review options on the financials tab.
+        </p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/financials">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderPortfolioOpportunitySections(metrics, portfolio) {
+  return [
+    renderRefinanceOpportunitySection(portfolio),
+    renderRentReviewOpportunitySection(portfolio),
+    renderMarketplaceOpportunitySection(metrics, portfolio),
+  ].filter(Boolean).join('');
+}
+
+function renderPropertyRefinanceQuote(index) {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  const property = getPortfolioProperty(index);
+  if (!property) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  if (!hasRefinanceOpportunity(property)) {
+    navigate(`/portfolio/property/${index}/financials`);
+    return;
+  }
+
+  const quote = buildRefinanceQuote(property);
+  const beforeMetrics = computePortfolioMetrics(portfolio.properties);
+  const afterMetrics = computePortfolioMetricsAfterRefinance(portfolio.properties, index, quote);
+  const address = formatAddress(property);
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell">
+      <div class="page-content">
+        <div class="breadcrumb">
+          <a href="#/dashboard">Dashboard</a> /
+          <a href="#/portfolio/summary">Portfolio summary</a> /
+          <a href="#/portfolio/property/${index}/financials">Financials</a> /
+          Refinance quote
+        </div>
+        <h1 class="page-title">Indicative refinance quote</h1>
+        <p class="page-intro">${escapeHtml(address)}</p>
+
+        <div class="quote-layout">
+          <section class="card quote-summary">
+            <h2 class="section-title">Indicative terms</h2>
+            <dl class="quote-summary__grid">
+              <div class="quote-summary__item">
+                <dt>Remaining mortgage balance</dt>
+                <dd>${formatCurrency(quote.loanAmount)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Current interest rate</dt>
+                <dd>${formatInterestRate(quote.currentRate)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Indicative new rate</dt>
+                <dd>${formatInterestRate(quote.bestRate)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Rate reduction</dt>
+                <dd>${formatInterestRate(quote.rateDifference)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Current monthly payment</dt>
+                <dd>${formatCurrency(quote.currentMonthlyPayment)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Indicative new monthly payment</dt>
+                <dd>${formatCurrency(quote.newMonthlyPayment)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Estimated monthly saving</dt>
+                <dd>${formatCurrency(quote.monthlySavings)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+            </dl>
+            <p class="quote-summary__note">Illustrative refinance quote based on interest-only servicing at ${formatInterestRate(quote.bestRate)} on your existing balance. Subject to affordability, valuation, early repayment charges and lending criteria.</p>
+          </section>
+
+          <section class="card quote-comparison">
+            <h2 class="section-title">Portfolio impact</h2>
+            <p class="quote-comparison__intro">Estimated effect on your portfolio summary if this property is refinanced at the indicative rate.</p>
+            <div class="data-table-wrap">
+              <table class="data-table quote-comparison__table">
+                <thead>
+                  <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col">Current portfolio</th>
+                    <th scope="col">After refinance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
+                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
+                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
+                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
+                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
+                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
+                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="btn-group">
+          <a class="btn btn-secondary" href="#/portfolio/property/${index}/financials">Back to financials</a>
+          <a class="btn btn-primary" href="#/portfolio/summary">Return to portfolio</a>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+}
+
+function renderPropertyRentReview(index) {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  const property = getPortfolioProperty(index);
+  if (!property) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  if (!hasRentReviewOpportunity(property)) {
+    navigate(`/portfolio/property/${index}/financials`);
+    return;
+  }
+
+  const quote = buildRentReviewQuote(property);
+  const beforeMetrics = computePortfolioMetrics(portfolio.properties);
+  const afterMetrics = computePortfolioMetricsAfterRentReview(portfolio.properties, index, quote);
+  const address = formatAddress(property);
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell">
+      <div class="page-content">
+        <div class="breadcrumb">
+          <a href="#/dashboard">Dashboard</a> /
+          <a href="#/portfolio/summary">Portfolio summary</a> /
+          <a href="#/portfolio/property/${index}/financials">Financials</a> /
+          Rent review
+        </div>
+        <h1 class="page-title">Rent review</h1>
+        <p class="page-intro">${escapeHtml(address)}</p>
+
+        <div class="quote-layout">
+          <section class="card quote-summary">
+            <h2 class="section-title">Indicative uplift</h2>
+            <dl class="quote-summary__grid">
+              <div class="quote-summary__item">
+                <dt>Current achieved rent</dt>
+                <dd>${formatCurrency(quote.currentAchievedRent)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Estimated market rent</dt>
+                <dd>${formatCurrency(quote.marketRent)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Proposed achieved rent</dt>
+                <dd>${formatCurrency(quote.proposedAchievedRent)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Estimated monthly uplift</dt>
+                <dd>${formatCurrency(quote.monthlyUplift)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Estimated annual uplift</dt>
+                <dd>${formatCurrency(quote.annualUplift)}</dd>
+              </div>
+            </dl>
+            <p class="quote-summary__note">Illustrative rent review based on PriceHubble estimated market rent. Actual achievable rent depends on tenancy terms, notice periods and local market conditions.</p>
+          </section>
+
+          <section class="card quote-comparison">
+            <h2 class="section-title">Portfolio impact</h2>
+            <p class="quote-comparison__intro">Estimated effect on your portfolio summary if achieved rent is brought in line with market rent for this property.</p>
+            <div class="data-table-wrap">
+              <table class="data-table quote-comparison__table">
+                <thead>
+                  <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col">Current portfolio</th>
+                    <th scope="col">After rent review</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
+                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
+                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
+                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
+                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
+                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
+                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="btn-group">
+          <a class="btn btn-secondary" href="#/portfolio/property/${index}/financials">Back to financials</a>
+          <button type="button" class="btn btn-primary">Prepare documents</button>
+          <a class="btn btn-tertiary" href="#/portfolio/summary">Return to portfolio</a>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+}
+
+function renderMarketplaceCard(listing) {
+  const address = formatAddress(listing);
+  return `
+    <article class="marketplace-card">
+      <div class="marketplace-card__media" aria-hidden="true">
+        <span class="marketplace-card__media-label">${escapeHtml(listing.propertyType)}</span>
+      </div>
+      <div class="marketplace-card__body">
+        <p class="marketplace-card__meta">${listing.bedrooms} bed ${escapeHtml(listing.propertyType.toLowerCase())} · ${escapeHtml(listing.city)}</p>
+        <h3 class="marketplace-card__address">${escapeHtml(address)}</h3>
+        <dl class="marketplace-card__stats">
+          <div class="marketplace-card__stat">
+            <dt>Asking price</dt>
+            <dd>${formatCurrency(listing.askingPrice)}</dd>
+          </div>
+          <div class="marketplace-card__stat">
+            <dt>Estimated market rent</dt>
+            <dd>${formatCurrency(listing.marketRent)}<span class="cell-suffix">/mo</span></dd>
+          </div>
+          <div class="marketplace-card__stat marketplace-card__stat--highlight">
+            <dt>Estimated gross yield</dt>
+            <dd>${formatPercent(listing.grossYield)}</dd>
+          </div>
+        </dl>
+        <a class="btn btn-primary marketplace-card__cta" href="#/portfolio/marketplace/quote/${escapeHtml(listing.id)}">Get mortgage quote</a>
+      </div>
+    </article>
+  `;
+}
+
+function renderMarketplace() {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  const metrics = computePortfolioMetrics(portfolio.properties);
+  if (!metrics.hasEquityData || metrics.totalEquity <= OPPORTUNITY_EQUITY_THRESHOLD) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  const opportunities = getPortfolioMarketOpportunities(portfolio.properties);
+  const areaLabel = opportunities.cities.length === 1
+    ? opportunities.cities[0]
+    : 'your portfolio areas';
+  const maxPriceLabel = formatCurrency(MARKETPLACE_MAX_ASKING_PRICE);
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell">
+      <div class="page-content">
+        <div class="breadcrumb">
+          <a href="#/dashboard">Dashboard</a> /
+          <a href="#/portfolio/summary">Portfolio summary</a> /
+          Marketplace
+        </div>
+        <h1 class="page-title">Investment marketplace</h1>
+        <p class="page-intro">Buy-to-let listings in ${escapeHtml(areaLabel)} priced at ${maxPriceLabel} or below with estimated gross yields of 5% or above.</p>
+
+        ${opportunities.listings.length === 0 ? `
+          <div class="card">
+            <p class="empty-state-text">No qualifying listings are currently available in your portfolio areas.</p>
+            <div class="btn-group">
+              <a class="btn btn-secondary" href="#/portfolio/summary">Back to portfolio</a>
+            </div>
+          </div>
+        ` : `
+          <div class="marketplace-grid">
+            ${opportunities.listings.map((listing) => renderMarketplaceCard(listing)).join('')}
+          </div>
+          <div class="btn-group">
+            <a class="btn btn-secondary" href="#/portfolio/summary">Back to portfolio</a>
+          </div>
+        `}
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+}
+
+function renderPortfolioEquityMetric(metrics) {
+  if (!metrics.hasEquityData) {
+    return renderPortfolioMetric('Total equity', renderMissingIndicator(), {
+      sub: 'Add mortgage details to a property to calculate equity',
+    });
+  }
+
+  const equitySub = metrics.equityPropertyCount < metrics.totalProperties
+    ? `Based on ${metrics.equityPropertyCount} of ${metrics.totalProperties} properties with mortgage details recorded`
+    : null;
+
+  return renderPortfolioMetric('Total equity', formatCurrency(metrics.totalEquity), { sub: equitySub });
+}
+
+function renderPortfolioLtvMetric(metrics) {
+  if (!metrics.hasEquityData) {
+    return renderPortfolioMetric('Portfolio LTV', renderMissingIndicator());
+  }
+
+  return renderPortfolioMetric('Portfolio LTV', formatPercent(metrics.overallLtv));
+}
+
 function renderPortfolioReport(metrics) {
+  const change = metrics.portfolioValueChange3m || {};
+  const changeTone = change.pct == null ? null : change.pct >= 0 ? 'up' : 'down';
+  const changeSub = change.pct != null
+    ? `${change.pct >= 0 ? '+' : ''}${change.pct}% over 3 months`
+    : null;
+
   return `
     <section class="portfolio-report" aria-label="Portfolio summary">
       <div class="portfolio-report__header">
-        <div>
+        <div class="section-title-row">
           <h2 class="portfolio-report__title">Portfolio overview</h2>
-          <p class="portfolio-report__note">Property values and market rents are populated automatically from our AVM. Add rent agreed figures when tenancy terms are confirmed.</p>
+          ${renderInfoTooltip('High-level portfolio summary continuously updated with the latest property data to provide an accurate view of how your investments are performing.')}
         </div>
       </div>
-      <div class="portfolio-report__grid">
-        <div class="portfolio-metric portfolio-metric--highlight">
-          <div class="portfolio-metric__value">${formatCurrency(metrics.totalPortfolioValue)}</div>
-          <div class="portfolio-metric__label">Total portfolio value (AVM)</div>
+      <div class="portfolio-report__columns">
+        <div class="portfolio-report__column">
+          <h3 class="portfolio-report__column-title">Value &amp; equity</h3>
+          <div class="portfolio-report__grid">
+            ${renderPortfolioMetric('Total portfolio value', formatCurrency(metrics.totalPortfolioValue), { highlight: true })}
+            ${renderPortfolioMetric('Total mortgage balance', formatCurrency(metrics.totalMortgageBalance))}
+            ${renderPortfolioEquityMetric(metrics)}
+            ${renderPortfolioLtvMetric(metrics)}
+          </div>
         </div>
-        <div class="portfolio-metric portfolio-metric--highlight">
-          <div class="portfolio-metric__value">${formatCurrency(metrics.totalMarketRent)}</div>
-          <div class="portfolio-metric__label">Total market rent (Rent AVM)</div>
+        <div class="portfolio-report__column">
+          <h3 class="portfolio-report__column-title">Income &amp; occupancy</h3>
+          <div class="portfolio-report__grid">
+            ${renderPortfolioMetric('Total market rent', formatCurrency(metrics.totalMarketRent), { highlight: true })}
+            ${renderPortfolioMetric('Total achieved rent', renderRentAgreedDisplay(metrics.totalRentAgreed, true), { highlight: true })}
+            ${renderPortfolioMetric('Occupied properties', escapeHtml(metrics.occupancyFraction), {
+    sub: metrics.totalProperties > 0 ? `${metrics.occupiedCount} of ${metrics.totalProperties} let` : null,
+  })}
+          </div>
         </div>
-        <div class="portfolio-metric portfolio-metric--highlight">
-          <div class="portfolio-metric__value">${renderRentAgreedDisplay(metrics.totalRentAgreed, true)}</div>
-          <div class="portfolio-metric__label">Total rent agreed</div>
-        </div>
-        <div class="portfolio-metric">
-          <div class="portfolio-metric__value">${formatCurrency(metrics.totalEquity)}</div>
-          <div class="portfolio-metric__label">Total equity</div>
-        </div>
-        <div class="portfolio-metric">
-          <div class="portfolio-metric__value">${formatPercent(metrics.icr)}</div>
-          <div class="portfolio-metric__label">ICR</div>
-        </div>
-        <div class="portfolio-metric">
-          <div class="portfolio-metric__value">${metrics.totalProperties}</div>
-          <div class="portfolio-metric__label">Total properties</div>
-        </div>
-        <div class="portfolio-metric">
-          <div class="portfolio-metric__value">${formatCurrency(metrics.totalMortgageMonthly)}</div>
-          <div class="portfolio-metric__label">Monthly mortgage payments</div>
-        </div>
-        <div class="portfolio-metric">
-          <div class="portfolio-metric__value">${formatPercent(metrics.grossYield)}</div>
-          <div class="portfolio-metric__label">Gross yield (market rent)</div>
+        <div class="portfolio-report__column">
+          <h3 class="portfolio-report__column-title">Performance</h3>
+          <div class="portfolio-report__grid">
+            ${renderPortfolioMetric('Gross yield', formatPercent(metrics.grossYield))}
+            ${renderPortfolioMetric('Interest coverage ratio', formatPercent(metrics.icr))}
+            ${renderPortfolioMetric('Portfolio value change (3 months)', formatCurrencyChange(change.amount), {
+    tone: changeTone,
+    sub: changeSub,
+  })}
+          </div>
         </div>
       </div>
     </section>
@@ -1735,31 +2795,34 @@ function renderSummary() {
       <div class="page-content">
         <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / Portfolio summary</div>
         <h1 class="page-title">${escapeHtml(portfolio.name)}</h1>
-        <p class="page-subtitle">Live portfolio reporting — add or remove properties to see figures update.</p>
 
         ${renderPortfolioReport(metrics)}
 
+        ${renderPortfolioOpportunitySections(metrics, portfolio)}
+
         <div class="card">
-          <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px;">
-            <h2 class="section-title" style="margin: 0;">Properties</h2>
+          <div class="portfolio-properties-header">
+            <div class="section-title-row">
+              <h2 class="section-title">Portfolio properties</h2>
+              ${renderInfoTooltip('Properties currently held in your portfolio, showing key performance metrics for at-a-glance monitoring. Select a property to view the full asset profile.')}
+            </div>
             <a class="btn btn-secondary" href="#/portfolio/summary/add">Add property</a>
           </div>
           ${portfolio.properties.length === 0 ? `
-            <p style="color: var(--lbg-text-muted); margin: 0;">No properties in this portfolio. <a href="#/portfolio/summary/add">Add your first property</a>.</p>
+            <p class="empty-state-text">No properties are currently held in this portfolio. <a href="#/portfolio/summary/add">Add a property</a> to begin monitoring performance.</p>
           ` : `
           <div class="data-table-wrap">
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Ref</th>
+                  <th>Reference</th>
                   <th>Address</th>
-                  <th>Property value (AVM)</th>
-                  <th>Market rent (Rent AVM)</th>
-                  <th>Rent agreed</th>
+                  <th>Estimated value</th>
+                  <th>Market rent</th>
+                  <th>Achieved rent</th>
                   <th>Occupancy</th>
-                  <th>Mortgage payments</th>
-                  <th>Interest rate</th>
-                  <th class="actions-col"></th>
+                  <th>Mortgage payment</th>
+                  <th>Mortgage rate</th>
                 </tr>
               </thead>
               <tbody>
@@ -1780,9 +2843,6 @@ function renderSummary() {
                     <td>${renderLineOccupancy(p.occupancy)}</td>
                     <td>${renderLineCurrency(p.monthlyPayments)}</td>
                     <td>${renderLineInterestRate(p.interestRate)}</td>
-                    <td class="actions-col">
-                      <button type="button" class="btn-icon-danger" data-action="remove-property" data-index="${index}">Remove</button>
-                    </td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -1808,24 +2868,11 @@ function renderSummary() {
     navigate('/portfolio/create');
   });
 
-  document.querySelectorAll('[data-action="remove-property"]').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const index = Number(btn.dataset.index);
-      portfolio.properties.splice(index, 1);
-      saveState(state);
-      renderSummary();
-    });
-  });
-
   document.querySelectorAll('[data-action="view-property"]').forEach((row) => {
     const openProperty = () => {
       navigate(`/portfolio/property/${row.dataset.index}/overview`);
     };
-    row.addEventListener('click', (event) => {
-      if (event.target.closest('[data-action="remove-property"]')) return;
-      openProperty();
-    });
+    row.addEventListener('click', openProperty);
     row.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
@@ -2080,6 +3127,18 @@ function render() {
     renderPropertyDetail(parsed.index, parsed.tab);
     return;
   }
+  if (parsed.type === 'marketplace-quote') {
+    renderMortgageQuote(parsed.listingId);
+    return;
+  }
+  if (parsed.type === 'refinance-quote') {
+    renderPropertyRefinanceQuote(parsed.index);
+    return;
+  }
+  if (parsed.type === 'rent-review') {
+    renderPropertyRentReview(parsed.index);
+    return;
+  }
 
   switch (route) {
     case '/login':
@@ -2107,6 +3166,9 @@ function render() {
       break;
     case '/portfolio/summary':
       renderSummary();
+      break;
+    case '/portfolio/marketplace':
+      renderMarketplace();
       break;
     case '/portfolio/summary/add':
       renderSummaryAddProperty();
