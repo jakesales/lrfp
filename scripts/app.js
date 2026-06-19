@@ -36,6 +36,7 @@ import {
   TENANCY_AGREEMENT_TYPES,
   getQualifiedMarketplaceListings,
   filterMarketplaceByEpc,
+  applyMarketplaceFilters,
   isCompliantEpcRating,
   getPortfolioMarketOpportunities,
   getMarketplaceListingById,
@@ -85,6 +86,7 @@ let manualEntryErrors = {};
 let manualEntryDraft = {};
 let pendingBulkImport = null;
 let marketplaceEpcFilter = 'all';
+let marketplaceInvestorClubFilter = 'all';
 
 const LBG_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" fill="none" height="40" viewBox="0 0 180 50" width="144">
 <g>
@@ -104,6 +106,10 @@ const LBG_LOGO_APPLY = LBG_LOGO
   .replace('width="144"', 'width="65"')
   .replace(/fill="black"/g, 'fill="white"')
   .replace('fill="#006A4A"', 'fill="#b8e0cc"');
+
+const LBG_LOGO_SMALL = LBG_LOGO
+  .replace('height="40"', 'height="12"')
+  .replace('width="144"', 'width="43"');
 
 function renderLbgApplyButton() {
   return `
@@ -886,6 +892,17 @@ function renderPropertyOverviewTab(property) {
           <span>Last 2 years % change: <strong class="${seed.saleChangePct < 0 ? 'overview-trend-meta--down' : ''}">${seed.saleChangePct}%</strong></span>
         </div>
         ${renderOverviewTrendChart(seed.saleTrend)}
+      </section>
+
+      <section class="overview-section investor-club-section">
+        <div class="overview-section__header">
+          <div class="overview-section__title-wrap">
+            <span class="investor-club-section__logo" aria-hidden="true">${LBG_LOGO_SMALL}</span>
+            <h2 class="overview-section__title">Ready to sell quickly?</h2>
+          </div>
+        </div>
+        <p class="investor-club-section__text">Add this property to the Lloyds Investor Club. The Investor Club is an exclusive marketplace just for Lloyds landlord customers.</p>
+        <button type="button" class="btn btn-secondary investor-club-section__cta" data-action="add-investor-club">Add to Investor Club</button>
       </section>
 
       <div class="property-overview-actions">
@@ -2436,24 +2453,37 @@ function renderPropertyEpcImprovement(index) {
   bindCommonActions();
 }
 
-function renderMarketplaceEpcFilter() {
+function renderMarketplaceFilters() {
+  const investorClubActive = marketplaceInvestorClubFilter === 'investor-club';
   return `
-    <div class="marketplace-epc-filter" role="group" aria-label="Filter listings by EPC rating">
-      <span class="marketplace-epc-filter__label">EPC filter</span>
-      <div class="marketplace-epc-filter__options">
-        <button
-          type="button"
-          class="marketplace-epc-filter__option${marketplaceEpcFilter === 'compliant' ? ' is-active' : ''}"
-          data-epc-filter="compliant"
-          aria-pressed="${marketplaceEpcFilter === 'compliant'}"
-        >EPC A–C</button>
-        <button
-          type="button"
-          class="marketplace-epc-filter__option${marketplaceEpcFilter === 'all' ? ' is-active' : ''}"
-          data-epc-filter="all"
-          aria-pressed="${marketplaceEpcFilter === 'all'}"
-        >All EPC</button>
+    <div class="marketplace-filters">
+      <div class="marketplace-epc-filter" role="group" aria-label="Filter listings by EPC rating">
+        <span class="marketplace-epc-filter__label">EPC filter</span>
+        <div class="marketplace-epc-filter__options">
+          <button
+            type="button"
+            class="marketplace-epc-filter__option${marketplaceEpcFilter === 'compliant' ? ' is-active' : ''}"
+            data-epc-filter="compliant"
+            aria-pressed="${marketplaceEpcFilter === 'compliant'}"
+          >EPC A–C</button>
+          <button
+            type="button"
+            class="marketplace-epc-filter__option${marketplaceEpcFilter === 'all' ? ' is-active' : ''}"
+            data-epc-filter="all"
+            aria-pressed="${marketplaceEpcFilter === 'all'}"
+          >All EPC</button>
+        </div>
       </div>
+      <span class="marketplace-filters__divider" aria-hidden="true">|</span>
+      <button
+        type="button"
+        class="marketplace-investor-club-filter${investorClubActive ? ' is-active' : ''}"
+        data-investor-club-filter="investor-club"
+        aria-pressed="${investorClubActive}"
+      >
+        <span class="marketplace-investor-club-filter__logo" aria-hidden="true">${LBG_LOGO_SMALL}</span>
+        <span class="marketplace-investor-club-filter__label">Investor Club</span>
+      </button>
     </div>
   `;
 }
@@ -2462,11 +2492,15 @@ function renderMarketplaceCard(listing) {
   const address = formatAddress(listing);
   const epcRating = String(listing.epcRating || '—').toUpperCase();
   const epcCompliant = isCompliantEpcRating(listing.epcRating);
+  const investorClubBadge = listing.investorClub
+    ? `<span class="marketplace-card__club-badge"><span class="marketplace-card__club-logo" aria-hidden="true">${LBG_LOGO_SMALL}</span>Investor Club</span>`
+    : '';
 
   return `
-    <article class="marketplace-card">
+    <article class="marketplace-card${listing.investorClub ? ' marketplace-card--investor-club' : ''}">
       <div class="marketplace-card__media" aria-hidden="true">
         <span class="marketplace-card__media-label">${escapeHtml(listing.propertyType)}</span>
+        ${investorClubBadge}
         <span class="marketplace-card__epc-badge marketplace-card__epc-badge--${epcRating.toLowerCase()}${epcCompliant ? ' marketplace-card__epc-badge--compliant' : ''}">EPC ${epcRating}</span>
       </div>
       <div class="marketplace-card__body">
@@ -2496,13 +2530,28 @@ function renderMarketplaceCard(listing) {
   `;
 }
 
-function bindMarketplaceEpcFilter() {
+function bindMarketplaceFilters() {
   document.querySelectorAll('[data-epc-filter]').forEach((button) => {
     button.addEventListener('click', () => {
       marketplaceEpcFilter = button.dataset.epcFilter;
       renderMarketplace();
     });
   });
+
+  document.querySelector('[data-investor-club-filter]')?.addEventListener('click', () => {
+    marketplaceInvestorClubFilter = marketplaceInvestorClubFilter === 'investor-club' ? 'all' : 'investor-club';
+    renderMarketplace();
+  });
+}
+
+function getMarketplaceEmptyFilterMessage() {
+  if (marketplaceInvestorClubFilter === 'investor-club' && marketplaceEpcFilter === 'compliant') {
+    return 'No Investor Club listings match the EPC A–C filter. Try All EPC or turn off Investor Club to see more properties.';
+  }
+  if (marketplaceInvestorClubFilter === 'investor-club') {
+    return 'No Investor Club listings are currently available in your portfolio areas.';
+  }
+  return 'No listings match the EPC A–C filter in your portfolio areas. Switch to All EPC to see every available property.';
 }
 
 function renderMarketplace() {
@@ -2519,7 +2568,10 @@ function renderMarketplace() {
   }
 
   const opportunities = getPortfolioMarketOpportunities(portfolio.properties);
-  const filteredListings = filterMarketplaceByEpc(opportunities.listings, marketplaceEpcFilter);
+  const filteredListings = applyMarketplaceFilters(opportunities.listings, {
+    epcFilter: marketplaceEpcFilter,
+    investorClubFilter: marketplaceInvestorClubFilter,
+  });
   const areaLabel = opportunities.cities.length === 1
     ? opportunities.cities[0]
     : 'your portfolio areas';
@@ -2545,10 +2597,10 @@ function renderMarketplace() {
             </div>
           </div>
         ` : `
-          ${renderMarketplaceEpcFilter()}
+          ${renderMarketplaceFilters()}
           ${filteredListings.length === 0 ? `
             <div class="card marketplace-empty-filter">
-              <p class="empty-state-text">No listings match the EPC A–C filter in your portfolio areas. Switch to All EPC to see every available property.</p>
+              <p class="empty-state-text">${getMarketplaceEmptyFilterMessage()}</p>
             </div>
           ` : `
             <p class="marketplace-results-count">${filteredListings.length} ${filteredListings.length === 1 ? 'listing' : 'listings'} shown</p>
@@ -2566,7 +2618,7 @@ function renderMarketplace() {
   `;
 
   bindCommonActions();
-  bindMarketplaceEpcFilter();
+  bindMarketplaceFilters();
 }
 
 function renderPortfolioEquityMetric(metrics) {

@@ -995,11 +995,63 @@ input::placeholder {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 16px;
+}
+
+.marketplace-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
   margin-bottom: 20px;
   padding: 16px 20px;
   background: #fff;
   border: 1px solid var(--lbg-border);
   border-radius: 12px;
+}
+
+.marketplace-filters__divider {
+  color: var(--lbg-border);
+  font-size: 1.25rem;
+  font-weight: 300;
+  line-height: 1;
+}
+
+.marketplace-investor-club-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  border: 1px solid var(--lbg-border);
+  border-radius: 999px;
+  background: var(--lbg-bg-alt);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--lbg-text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.marketplace-investor-club-filter:hover {
+  border-color: var(--lbg-green);
+  color: var(--lbg-green-dark);
+}
+
+.marketplace-investor-club-filter.is-active {
+  background: #fff;
+  border-color: var(--lbg-green);
+  color: var(--lbg-green-dark);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.marketplace-investor-club-filter__logo {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+.marketplace-investor-club-filter__logo svg {
+  display: block;
 }
 
 .marketplace-epc-filter__label {
@@ -1081,6 +1133,36 @@ input::placeholder {
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--lbg-green-dark);
+}
+
+.marketplace-card__club-badge {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--lbg-green-dark);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.marketplace-card__club-logo {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+.marketplace-card__club-logo svg {
+  display: block;
+}
+
+.marketplace-card--investor-club .marketplace-card__media {
+  background: linear-gradient(135deg, #e8f5ef 0%, #d4e8dc 55%, #c8e2d4 100%);
 }
 
 .marketplace-card__epc-badge {
@@ -1753,6 +1835,33 @@ input::placeholder {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.investor-club-section {
+  background: linear-gradient(135deg, #f8fcfa 0%, #eef7f2 100%);
+  border-color: #cfe8dc;
+}
+
+.investor-club-section__logo {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+.investor-club-section__logo svg {
+  display: block;
+}
+
+.investor-club-section__text {
+  margin: 0 0 20px;
+  max-width: 640px;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--lbg-text);
+}
+
+.investor-club-section__cta {
+  margin-top: 0;
 }
 
 .overview-action-btn {

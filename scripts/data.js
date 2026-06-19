@@ -91,6 +91,7 @@ export const MARKETPLACE_LISTINGS = [
     askingPrice: 295000,
     marketRent: 1280,
     epcRating: 'B',
+    investorClub: true,
   },
   {
     id: 'mp-brs-1',
@@ -127,6 +128,7 @@ export const MARKETPLACE_LISTINGS = [
     askingPrice: 475000,
     marketRent: 2050,
     epcRating: 'B',
+    investorClub: true,
   },
   {
     id: 'mp-ldn-2',
@@ -163,6 +165,7 @@ export const MARKETPLACE_LISTINGS = [
     askingPrice: 185000,
     marketRent: 850,
     epcRating: 'C',
+    investorClub: true,
   },
   {
     id: 'mp-bham-1',
@@ -175,6 +178,7 @@ export const MARKETPLACE_LISTINGS = [
     askingPrice: 275000,
     marketRent: 1225,
     epcRating: 'B',
+    investorClub: true,
   },
   {
     id: 'mp-edi-1',
@@ -291,6 +295,20 @@ export function filterMarketplaceByEpc(listings, filter = 'all') {
     return listings.filter((listing) => isCompliantEpcRating(listing.epcRating));
   }
   return listings;
+}
+
+export function filterMarketplaceByInvestorClub(listings, filter = 'all') {
+  if (filter === 'investor-club') {
+    return listings.filter((listing) => listing.investorClub === true);
+  }
+  return listings;
+}
+
+export function applyMarketplaceFilters(listings, { epcFilter = 'all', investorClubFilter = 'all' } = {}) {
+  return filterMarketplaceByInvestorClub(
+    filterMarketplaceByEpc(listings, epcFilter),
+    investorClubFilter,
+  );
 }
 
 export function getMarketplaceListingById(id) {
