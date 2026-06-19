@@ -63,6 +63,9 @@ export const MARKETPLACE_MORTGAGE_RATE = 5.29;
 export const CURRENT_BEST_MORTGAGE_RATE = 4.99;
 export const REFINANCE_RATE_THRESHOLD = 0.5;
 export const RENT_REVIEW_GAP_THRESHOLD = 500;
+export const POOR_EPC_RATINGS = ['D', 'E', 'F', 'G'];
+export const TARGET_EPC_RATINGS = ['A', 'B', 'C'];
+export const EPC_IMPROVEMENT_MORTGAGE_RATE = 4.99;
 
 export const MARKETPLACE_LISTINGS = [
   {
@@ -75,6 +78,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 265000,
     marketRent: 1350,
+    epcRating: 'C',
   },
   {
     id: 'mp-mcr-2',
@@ -86,6 +90,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 1,
     askingPrice: 295000,
     marketRent: 1280,
+    epcRating: 'B',
   },
   {
     id: 'mp-brs-1',
@@ -97,6 +102,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 318000,
     marketRent: 1380,
+    epcRating: 'D',
   },
   {
     id: 'mp-brs-2',
@@ -108,6 +114,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 3,
     askingPrice: 425000,
     marketRent: 1800,
+    epcRating: 'C',
   },
   {
     id: 'mp-ldn-1',
@@ -119,6 +126,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 475000,
     marketRent: 2050,
+    epcRating: 'B',
   },
   {
     id: 'mp-ldn-2',
@@ -130,6 +138,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 499000,
     marketRent: 2100,
+    epcRating: 'C',
   },
   {
     id: 'mp-leeds-1',
@@ -141,6 +150,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 248000,
     marketRent: 1120,
+    epcRating: 'E',
   },
   {
     id: 'mp-liv-1',
@@ -152,6 +162,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 1,
     askingPrice: 185000,
     marketRent: 850,
+    epcRating: 'C',
   },
   {
     id: 'mp-bham-1',
@@ -163,6 +174,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 275000,
     marketRent: 1225,
+    epcRating: 'B',
   },
   {
     id: 'mp-edi-1',
@@ -174,6 +186,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 385000,
     marketRent: 1650,
+    epcRating: 'C',
   },
   {
     id: 'mp-mcr-3',
@@ -185,6 +198,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 3,
     askingPrice: 545000,
     marketRent: 2400,
+    epcRating: 'D',
   },
   {
     id: 'mp-brs-3',
@@ -196,6 +210,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 3,
     askingPrice: 580000,
     marketRent: 2550,
+    epcRating: 'C',
   },
   {
     id: 'mp-ldn-3',
@@ -207,6 +222,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 2,
     askingPrice: 685000,
     marketRent: 2980,
+    epcRating: 'B',
   },
   {
     id: 'mp-ldn-4',
@@ -218,6 +234,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 3,
     askingPrice: 825000,
     marketRent: 3600,
+    epcRating: 'C',
   },
   {
     id: 'mp-ldn-5',
@@ -229,6 +246,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 4,
     askingPrice: 950000,
     marketRent: 4100,
+    epcRating: 'A',
   },
   {
     id: 'mp-edi-2',
@@ -240,6 +258,7 @@ export const MARKETPLACE_LISTINGS = [
     bedrooms: 3,
     askingPrice: 520000,
     marketRent: 2280,
+    epcRating: 'D',
   },
 ];
 
@@ -261,6 +280,17 @@ export function getQualifiedMarketplaceListings(listings = MARKETPLACE_LISTINGS)
       && listing.grossYield >= MARKETPLACE_MIN_GROSS_YIELD
     ))
     .sort((a, b) => b.grossYield - a.grossYield);
+}
+
+export function isCompliantEpcRating(rating) {
+  return TARGET_EPC_RATINGS.includes(String(rating || '').trim().toUpperCase());
+}
+
+export function filterMarketplaceByEpc(listings, filter = 'all') {
+  if (filter === 'compliant') {
+    return listings.filter((listing) => isCompliantEpcRating(listing.epcRating));
+  }
+  return listings;
 }
 
 export function getMarketplaceListingById(id) {
@@ -379,6 +409,7 @@ export function enrichPropertyWithAvm(property) {
     ...property,
     rentAgreed: property.rentAgreed ?? '',
     purchasePrice: property.purchasePrice ?? '',
+    purchaseDate: property.purchaseDate ?? '',
     monthlyPayments: property.monthlyPayments ?? '',
     interestRate: property.interestRate ?? '',
     mortgageProvider: property.mortgageProvider ?? '',
@@ -555,6 +586,32 @@ export function parseCsvDetailed(text) {
   };
 }
 
+/** Re-validate edited import rows (e.g. after inline corrections in the upload UI). */
+export function validateImportRows(rows) {
+  const validatedRows = rows.map((row) => {
+    const property = { ...row.property };
+    const { valid, errors } = validateProperty(property);
+    return {
+      line: row.line,
+      property,
+      valid,
+      errors,
+      summary: valid ? 'Valid' : Object.values(errors).join('; '),
+    };
+  });
+
+  const validProperties = validatedRows
+    .filter((row) => row.valid)
+    .map((row) => enrichPropertyWithAvm(row.property));
+
+  return {
+    rows: validatedRows,
+    validProperties,
+    validCount: validProperties.length,
+    invalidCount: validatedRows.length - validProperties.length,
+  };
+}
+
 export function formatAddress(property) {
   return `${property.propertyNumber} ${property.street}, ${property.city}, ${property.postcode}`;
 }
@@ -713,6 +770,107 @@ export function computePortfolioMetricsAfterRefinance(properties, propertyIndex,
   return computePortfolioMetrics(enrichProperties(updated));
 }
 
+function propertySeedLength(property) {
+  return `${property.postcode || ''}${property.propertyNumber || ''}`.length;
+}
+
+export function getDefaultEpcDetails(property, { highlightDemo = false } = {}) {
+  const seed = propertySeedLength(property);
+  let currentRating = ['B', 'C', 'D', 'C'][seed % 4];
+  let potentialRating = currentRating === 'D' ? 'C' : currentRating === 'C' ? 'B' : 'A';
+
+  if (highlightDemo) {
+    currentRating = 'D';
+    potentialRating = 'C';
+  }
+
+  return {
+    currentRating,
+    potentialRating,
+    improvementCost: 6500 + (seed % 8) * 1750,
+  };
+}
+
+export function getPropertyEpcDetails(property, { propertyIndex } = {}) {
+  const highlightDemo = propertyIndex === 2;
+  const defaults = getDefaultEpcDetails(property, { highlightDemo });
+  const currentRating = String(property.epcRating || defaults.currentRating).trim().toUpperCase();
+  const potentialRating = String(property.epcPotential || defaults.potentialRating).trim().toUpperCase();
+
+  return {
+    currentRating,
+    potentialRating,
+    improvementCost: defaults.improvementCost,
+  };
+}
+
+export function ensurePropertyEpcBasics(property, propertyIndex) {
+  if (propertyIndex !== 2) return false;
+  if (String(property.epcRating || '').trim()) return false;
+
+  const defaults = getDefaultEpcDetails(property, { highlightDemo: true });
+  property.epcRating = defaults.currentRating;
+  property.epcPotential = defaults.potentialRating;
+  return true;
+}
+
+export function hasEpcImprovementOpportunity(property, { propertyIndex } = {}) {
+  const { currentRating } = getPropertyEpcDetails(property, { propertyIndex });
+  return POOR_EPC_RATINGS.includes(currentRating);
+}
+
+export function buildEpcImprovementQuote(property, { propertyIndex } = {}) {
+  const epc = getPropertyEpcDetails(property, { propertyIndex });
+  const fin = computePropertyFinancials(property);
+  const additionalLoan = epc.improvementCost;
+  const interestRate = EPC_IMPROVEMENT_MORTGAGE_RATE;
+  const currentMonthlyPayment = fin.remainingMortgage > 0 && fin.interestRate > 0
+    ? Math.round(fin.remainingMortgage * (fin.interestRate / 100 / 12))
+    : Number(property.monthlyPayments) || 0;
+  const additionalMonthlyPayment = Math.round(additionalLoan * (interestRate / 100 / 12));
+
+  return {
+    currentRating: epc.currentRating,
+    targetRating: epc.potentialRating,
+    improvementCost: epc.improvementCost,
+    additionalLoan,
+    interestRate,
+    currentMonthlyPayment,
+    additionalMonthlyPayment,
+    newMonthlyPayment: currentMonthlyPayment + additionalMonthlyPayment,
+    newMortgageBalance: (fin.remainingMortgage || 0) + additionalLoan,
+  };
+}
+
+export function getPortfolioEpcImprovementOpportunities(properties) {
+  const qualifying = properties
+    .map((property, index) => ({ property, index }))
+    .filter(({ property, index }) => hasEpcImprovementOpportunity(property, { propertyIndex: index }))
+    .map(({ property, index }) => ({
+      property,
+      index,
+      quote: buildEpcImprovementQuote(property, { propertyIndex: index }),
+    }));
+
+  const preferred = qualifying.find((item) => item.index === 2);
+  return preferred ? [preferred] : qualifying.slice(0, 1);
+}
+
+export function computePortfolioMetricsAfterEpcImprovement(properties, propertyIndex, quote) {
+  const updated = properties.map((property, index) => {
+    if (index !== propertyIndex) return property;
+
+    return {
+      ...property,
+      epcRating: quote.targetRating,
+      mortgageBalance: String(quote.newMortgageBalance),
+      monthlyPayments: String(quote.newMonthlyPayment),
+    };
+  });
+
+  return computePortfolioMetrics(enrichProperties(updated));
+}
+
 export function getMortgageProductType(property) {
   return String(property?.mortgageProductType || property?.productType || '').trim();
 }
@@ -787,6 +945,50 @@ export function getDemoTenancies(property, { highlightRentReview = false } = {})
   ];
 }
 
+export function isHmoProperty(property) {
+  return String(property?.propertyType || '').trim().toLowerCase() === 'hmo';
+}
+
+export function getDefaultFinancialBasics(property) {
+  const base = enrichPropertyWithAvm(property);
+  const seed = `${base.postcode || ''}${base.propertyNumber || ''}`.length;
+  const avm = Number(base.avmValue) || 400000;
+  const purchasePrice = Math.round(avm * (0.90 + (seed % 3) * 0.02));
+  const purchaseYear = 2018 + (seed % 6);
+  const purchaseMonth = String(3 + (seed % 9)).padStart(2, '0');
+  const marketRent = Number(base.marketRent) || 1400;
+  const rentAgreed = Math.round(marketRent * (0.92 + (seed % 5) * 0.02));
+
+  return {
+    purchasePrice: String(purchasePrice),
+    purchaseDate: `${purchaseYear}-${purchaseMonth}-01`,
+    rentAgreed: String(rentAgreed),
+  };
+}
+
+/** Prefill purchase details and single-let rent when not yet recorded. */
+export function ensurePropertyFinancialBasics(property) {
+  const defaults = getDefaultFinancialBasics(property);
+  let changed = false;
+
+  if (!Number(String(property.purchasePrice || '').replace(/[^0-9.]/g, ''))) {
+    property.purchasePrice = defaults.purchasePrice;
+    changed = true;
+  }
+
+  if (!String(property.purchaseDate || '').trim()) {
+    property.purchaseDate = defaults.purchaseDate;
+    changed = true;
+  }
+
+  if (!isHmoProperty(property) && getAchievedRentTotal(property) <= 0) {
+    property.rentAgreed = defaults.rentAgreed;
+    changed = true;
+  }
+
+  return changed;
+}
+
 /** Apply a complete financials demo — mortgage details plus single-let or HMO tenancies. */
 export function applyFinancialDemoScenario(property, scenario, { propertyIndex = 0 } = {}) {
   const base = enrichPropertyWithAvm(property);
@@ -797,6 +999,7 @@ export function applyFinancialDemoScenario(property, scenario, { propertyIndex =
   });
 
   property.purchasePrice = financials.purchasePrice;
+  property.purchaseDate = financials.purchaseDate;
   property.mortgageBalance = financials.remainingMortgage;
   property.interestRate = financials.interestRate;
   property.mortgageProvider = financials.bank;
@@ -851,9 +1054,14 @@ export function computePropertyFinancials(property) {
     }
   }
 
+  const grossYield = currentValue > 0 && rentAgreed > 0
+    ? (rentAgreed * 12 / currentValue) * 100
+    : null;
+
   return {
     currentValue,
     purchasePrice,
+    purchaseDate: property.purchaseDate || '',
     remainingMortgage,
     interestRate,
     bank,
@@ -866,7 +1074,9 @@ export function computePropertyFinancials(property) {
     ltv,
     indicativeRefinanceRate,
     monthlySavings,
+    grossYield,
     hasPurchasePrice: purchasePrice > 0,
+    hasPurchaseDate: !!String(property.purchaseDate || '').trim(),
     hasCurrentValue: purchasePrice > 0 && currentValue > 0,
     hasValueChange: purchasePrice > 0 && currentValue > 0 && valueChange != null,
     hasRemainingMortgage: remainingMortgage > 0,
@@ -876,9 +1086,14 @@ export function computePropertyFinancials(property) {
     hasMortgageExpiry: !!String(property.mortgageEndDate || '').trim(),
     hasMarketRent: marketRentRange != null,
     hasRentAgreed: rentAgreed > 0,
+    hasGrossYield: grossYield != null,
     hasLtv: currentValue > 0 && remainingMortgage > 0 && ltv != null,
     hasIndicativeRefinance: interestRate > 0 && indicativeRefinanceRate != null,
   };
+}
+
+export function formatPurchaseDate(value) {
+  return formatMortgageExpiry(value);
 }
 
 export function formatMortgageExpiry(value) {
@@ -904,6 +1119,8 @@ export function getDemoFinancials(property, { highlightRefinance = false } = {})
   const bank = banks[seed % banks.length];
   const expiryYear = 2026 + (seed % 3);
   const expiryMonth = String(6 + (seed % 6)).padStart(2, '0');
+  const purchaseYear = 2018 + (seed % 6);
+  const purchaseMonth = String(3 + (seed % 9)).padStart(2, '0');
   const marketRent = Number(property.marketRent) || 1400;
   const rentAgreed = Math.round(marketRent * (0.92 + (seed % 5) * 0.02));
 
@@ -911,6 +1128,7 @@ export function getDemoFinancials(property, { highlightRefinance = false } = {})
 
   return {
     purchasePrice: String(purchasePrice),
+    purchaseDate: `${purchaseYear}-${purchaseMonth}-01`,
     remainingMortgage: String(remainingMortgage),
     interestRate,
     bank,

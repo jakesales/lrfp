@@ -6,6 +6,7 @@ import {
   REQUIRED_FIELDS,
   OPTIONAL_FIELDS,
   parseCsvDetailed,
+  validateImportRows,
   searchAddressesByPostcode,
   validateProperty,
   formatAddress,
@@ -19,6 +20,9 @@ import {
   computePropertyFinancials,
   getMarketRentRange,
   formatMortgageExpiry,
+  formatPurchaseDate,
+  ensurePropertyFinancialBasics,
+  isHmoProperty,
   getDemoFinancials,
   applyFinancialsToProperty,
   getPropertyTenancies,
@@ -31,11 +35,19 @@ import {
   MORTGAGE_PRODUCT_TYPES,
   TENANCY_AGREEMENT_TYPES,
   getQualifiedMarketplaceListings,
+  filterMarketplaceByEpc,
+  isCompliantEpcRating,
   getPortfolioMarketOpportunities,
   getMarketplaceListingById,
   buildMortgageQuote,
   buildRefinanceQuote,
   buildRentReviewQuote,
+  buildEpcImprovementQuote,
+  computePortfolioMetricsAfterEpcImprovement,
+  getPortfolioEpcImprovementOpportunities,
+  hasEpcImprovementOpportunity,
+  getPropertyEpcDetails,
+  ensurePropertyEpcBasics,
   computePortfolioMetricsAfterPurchase,
   computePortfolioMetricsAfterRefinance,
   computePortfolioMetricsAfterRentReview,
@@ -71,6 +83,7 @@ const app = document.getElementById('app');
 let manualEntryErrors = {};
 let manualEntryDraft = {};
 let pendingBulkImport = null;
+let marketplaceEpcFilter = 'all';
 
 const LBG_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" fill="none" height="40" viewBox="0 0 180 50" width="144">
 <g>
@@ -84,6 +97,34 @@ const LBG_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" fil
 <path d="M163.442 32.6348L163.372 27.9691C166.326 29.8841 168.289 30.7546 170.599 30.7546C173.205 30.7546 174.891 29.7274 174.891 27.8646C174.891 26.6285 174.178 25.671 171.833 24.7135L168.098 23.2163C164.658 21.8409 163.112 19.9259 163.112 16.9489C163.112 12.9099 166.256 10.3681 171.086 10.3681C173.622 10.3681 176.003 11.1689 177.375 11.8305V16.3047C174.769 14.5638 172.841 13.8674 170.877 13.8674C168.445 13.8674 167.229 14.8249 167.229 16.3047C167.229 17.7671 167.993 18.5157 169.835 19.2818L174.526 21.1968C177.253 22.2936 179.043 24.2957 179.043 27.3423C179.043 31.3291 175.933 34.2713 170.408 34.2713C167.507 34.2365 164.988 33.3138 163.442 32.6348Z" fill="black"/>
 </g>
 </svg>`;
+
+const LBG_LOGO_APPLY = LBG_LOGO
+  .replace('height="40"', 'height="18"')
+  .replace('width="144"', 'width="65"')
+  .replace(/fill="black"/g, 'fill="white"')
+  .replace('fill="#006A4A"', 'fill="#b8e0cc"');
+
+function renderLbgApplyButton() {
+  return `
+    <button type="button" class="btn btn-primary btn-apply quote-apply-btn">
+      <span class="btn-apply__logo" aria-hidden="true">${LBG_LOGO_APPLY}</span>
+      <span class="btn-apply__divider" aria-hidden="true">|</span>
+      <span class="btn-apply__label">APPLY</span>
+    </button>
+  `;
+}
+
+function renderDataloftReportButton() {
+  return `
+    <button type="button" class="btn btn-apply btn-order-report">
+      <span class="btn-apply__logo">
+        <img src="assets/dataloft-logo.png" alt="" class="btn-order-report__logo" width="120" height="40">
+      </span>
+      <span class="btn-apply__divider" aria-hidden="true">|</span>
+      <span class="btn-apply__label">ORDER RENTAL EVIDENCE REPORT</span>
+    </button>
+  `;
+}
 
 let state = loadState();
 let draftPortfolio = state.draftPortfolio || { name: '', properties: [] };
@@ -106,6 +147,11 @@ function parseRoute(route) {
   const rentReviewMatch = route.match(/^\/portfolio\/property\/(\d+)\/rent-review$/);
   if (rentReviewMatch) {
     return { type: 'rent-review', index: Number(rentReviewMatch[1]) };
+  }
+
+  const epcImprovementMatch = route.match(/^\/portfolio\/property\/(\d+)\/epc-improvement$/);
+  if (epcImprovementMatch) {
+    return { type: 'epc-improvement', index: Number(epcImprovementMatch[1]) };
   }
 
   const propertyMatch = route.match(/^\/portfolio\/property\/(\d+)(?:\/([a-z-]+))?$/);
@@ -475,9 +521,9 @@ function bindRemoveProperty(index) {
 function renderMissingIndicator() {
   return `
     <span class="missing-indicator" title="Missing data — update required" aria-label="Missing data, update required">
-      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="16" viewBox="0 0 18 16" aria-hidden="true">
-        <path d="M9 0.5L17.5 15H0.5L9 0.5Z" fill="#c41e3a"/>
-        <text x="9" y="12.5" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="Inter, sans-serif">!</text>
+      <svg class="missing-indicator__icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <circle cx="9" cy="9" r="8"/>
+        <text x="9" y="12.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="Inter, sans-serif">!</text>
       </svg>
       <span class="missing-indicator__label">update</span>
     </span>
@@ -885,24 +931,46 @@ function renderTenancyEditRow(tenancy = {}, index = 0) {
 }
 
 function renderTenancyEditModal(property) {
-  const tenancies = getPropertyTenancies(property);
+  if (isHmoProperty(property)) {
+    const tenancies = getPropertyTenancies(property);
+
+    return `
+      <div class="modal" id="tenancy-edit-modal" hidden>
+        <div class="modal__backdrop" data-action="close-tenancy-edit"></div>
+        <div class="modal__panel modal__panel--wide" role="dialog" aria-labelledby="tenancy-edit-title" aria-modal="true">
+          <h2 class="modal__title" id="tenancy-edit-title">Edit rental</h2>
+          <p class="modal__intro">Record individual tenancies for HMO and multi-let properties. Total achieved rent is calculated from the monthly rents entered below.</p>
+          <form id="tenancy-edit-form" class="modal__form">
+            <div id="tenancy-edit-rows" class="tenancy-edit-rows">
+              ${tenancies.length
+        ? tenancies.map((tenancy, index) => renderTenancyEditRow(tenancy, index)).join('')
+        : renderTenancyEditRow({}, 0)}
+            </div>
+            <div class="tenancy-edit-actions">
+              <button type="button" class="btn btn-secondary" data-action="add-tenancy-row">Add tenancy</button>
+              <button type="button" class="btn btn-tertiary" data-action="prefill-tenancy-single">Prefill single tenancy</button>
+              <button type="button" class="btn btn-tertiary" data-action="prefill-tenancy-hmo">Prefill HMO</button>
+            </div>
+            <div class="modal__actions">
+              <button type="button" class="btn btn-tertiary" data-action="close-tenancy-edit">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
 
   return `
     <div class="modal" id="tenancy-edit-modal" hidden>
       <div class="modal__backdrop" data-action="close-tenancy-edit"></div>
-      <div class="modal__panel modal__panel--wide" role="dialog" aria-labelledby="tenancy-edit-title" aria-modal="true">
-        <h2 class="modal__title" id="tenancy-edit-title">Edit achieved rent</h2>
-        <p class="modal__intro">Record individual tenancies for HMO and multi-let properties. Total achieved rent is calculated from the monthly rents entered below.</p>
+      <div class="modal__panel" role="dialog" aria-labelledby="tenancy-edit-title" aria-modal="true">
+        <h2 class="modal__title" id="tenancy-edit-title">Edit rental</h2>
+        <p class="modal__intro">Update the recorded monthly rent for this property.</p>
         <form id="tenancy-edit-form" class="modal__form">
-          <div id="tenancy-edit-rows" class="tenancy-edit-rows">
-            ${tenancies.length
-    ? tenancies.map((tenancy, index) => renderTenancyEditRow(tenancy, index)).join('')
-    : renderTenancyEditRow({}, 0)}
-          </div>
-          <div class="tenancy-edit-actions">
-            <button type="button" class="btn btn-secondary" data-action="add-tenancy-row">Add tenancy</button>
-            <button type="button" class="btn btn-tertiary" data-action="prefill-tenancy-single">Prefill single tenancy</button>
-            <button type="button" class="btn btn-tertiary" data-action="prefill-tenancy-hmo">Prefill HMO</button>
+          <div class="form-field">
+            <label for="rent-agreed">Monthly rent (£)</label>
+            <input type="text" id="rent-agreed" name="rentAgreed" inputmode="decimal" value="${escapeHtml(property.rentAgreed || '')}" placeholder="e.g. 1450">
           </div>
           <div class="modal__actions">
             <button type="button" class="btn btn-tertiary" data-action="close-tenancy-edit">Cancel</button>
@@ -918,6 +986,7 @@ function renderPropertyFinancialsTab(property, index) {
   const fin = computePropertyFinancials(property);
   const tenancies = getPropertyTenancies(property);
   const mortgageProductType = getMortgageProductType(property);
+  const isHmo = isHmoProperty(property);
 
   const currentValueHtml = renderFinancialOrMissing(
     fin.hasCurrentValue,
@@ -940,6 +1009,11 @@ function renderPropertyFinancialsTab(property, index) {
     () => `<strong>${formatCurrency(fin.rentAgreed)}</strong><span class="cell-suffix">/mo</span>`,
   );
 
+  const grossYieldHtml = renderFinancialOrMissing(
+    fin.hasGrossYield,
+    () => `<strong>${formatPercent(fin.grossYield)}</strong>`,
+  );
+
   const refinanceHtml = fin.hasIndicativeRefinance
     ? `<strong>${fin.indicativeRefinanceRate.toFixed(1)}%</strong>${
       fin.monthlySavings > 0
@@ -949,6 +1023,7 @@ function renderPropertyFinancialsTab(property, index) {
     : renderMissingIndicator();
 
   const mortgageExpiryDisplay = formatMortgageExpiry(fin.mortgageExpiry);
+  const purchaseDateDisplay = formatPurchaseDate(fin.purchaseDate);
   const refinanceOpportunityHtml = renderFinancialRefinanceOpportunity(property, index);
   const rentReviewOpportunityHtml = renderFinancialRentReviewOpportunity(property, index);
 
@@ -980,19 +1055,19 @@ function renderPropertyFinancialsTab(property, index) {
         <div class="financial-grid">
           <div class="financial-grid__col">
             ${renderFinancialMetric('Purchase price', renderFinancialOrMissing(fin.hasPurchasePrice, () => `<strong>${formatCurrency(fin.purchasePrice)}</strong>`))}
+            ${renderFinancialMetric('Purchase date', renderFinancialOrMissing(fin.hasPurchaseDate && !!purchaseDateDisplay, () => `<strong>${escapeHtml(purchaseDateDisplay || '')}</strong>`))}
             ${renderFinancialMetric('Remaining mortgage', renderFinancialOrMissing(fin.hasRemainingMortgage, () => `<strong>${formatCurrency(fin.remainingMortgage)}</strong>`))}
             ${renderFinancialMetric('Mortgage product type', renderFinancialOrMissing(fin.hasMortgageProductType, () => `<strong>${escapeHtml(mortgageProductType)}</strong>`))}
+          </div>
+          <div class="financial-grid__col">
             ${renderFinancialMetric('Mortgage expiry', renderFinancialOrMissing(fin.hasMortgageExpiry && !!mortgageExpiryDisplay, () => `<strong>${escapeHtml(mortgageExpiryDisplay || '')}</strong>`))}
             ${renderFinancialMetric('Bank', renderFinancialOrMissing(fin.hasBank, () => `<strong>${escapeHtml(fin.bank)}</strong>`))}
-          </div>
-          <div class="financial-grid__col">
             ${renderFinancialMetric('Current value', currentValueHtml)}
             ${renderFinancialMetric('Value change', valueChangeHtml)}
-            ${renderFinancialMetric('Interest rate', renderFinancialOrMissing(fin.hasInterestRate, () => `<strong>${fin.interestRate.toFixed(1)}%</strong>`))}
-            ${renderFinancialMetric('LTV', renderFinancialOrMissing(fin.hasLtv, () => `<strong>${fin.ltv.toFixed(0)}%</strong>`))}
           </div>
           <div class="financial-grid__col">
-            ${renderFinancialMetric('Market rent', marketRentHtml)}
+            ${renderFinancialMetric('Interest rate', renderFinancialOrMissing(fin.hasInterestRate, () => `<strong>${fin.interestRate.toFixed(1)}%</strong>`))}
+            ${renderFinancialMetric('LTV', renderFinancialOrMissing(fin.hasLtv, () => `<strong>${fin.ltv.toFixed(0)}%</strong>`))}
             ${renderFinancialMetric('Indicative refinancing rate', refinanceHtml)}
           </div>
         </div>
@@ -1002,7 +1077,7 @@ function renderPropertyFinancialsTab(property, index) {
         <div class="financial-section__header">
           <div class="financial-section__title-wrap">
             <span class="financial-section__icon">${OVERVIEW_ICONS.rent}</span>
-            <h2 class="financial-section__title">Achieved rent</h2>
+            <h2 class="financial-section__title">Rental</h2>
           </div>
           <button type="button" class="financial-action-btn" data-action="open-tenancy-edit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
@@ -1010,10 +1085,18 @@ function renderPropertyFinancialsTab(property, index) {
           </button>
         </div>
 
-        <div class="achieved-rent-summary">
-          ${renderFinancialMetric('Total achieved rent', rentAgreedHtml)}
+        <div class="financial-grid">
+          <div class="financial-grid__col">
+            ${renderFinancialMetric('Market rent', marketRentHtml)}
+          </div>
+          <div class="financial-grid__col">
+            ${renderFinancialMetric('Total achieved rent', rentAgreedHtml)}
+          </div>
+          <div class="financial-grid__col">
+            ${renderFinancialMetric('Gross yield', grossYieldHtml)}
+          </div>
         </div>
-        ${renderTenancyTable(tenancies)}
+        ${isHmo ? renderTenancyTable(tenancies) : ''}
       </section>
     </div>
 
@@ -1026,6 +1109,10 @@ function renderPropertyFinancialsTab(property, index) {
           <div class="form-field">
             <label for="fin-purchase-price">Purchase price (£)</label>
             <input type="text" id="fin-purchase-price" name="purchasePrice" inputmode="decimal" value="${escapeHtml(property.purchasePrice || '')}" placeholder="e.g. 350000">
+          </div>
+          <div class="form-field">
+            <label for="fin-purchase-date">Purchase date</label>
+            <input type="month" id="fin-purchase-date" name="purchaseDate" value="${escapeHtml(property.purchaseDate ? String(property.purchaseDate).slice(0, 7) : '')}">
           </div>
           <div class="form-field">
             <label for="fin-remaining-mortgage">Remaining mortgage (£)</label>
@@ -1091,6 +1178,8 @@ function bindFinancialsEdit(index) {
     const data = new FormData(form);
     const property = portfolio.properties[index];
     property.purchasePrice = String(data.get('purchasePrice') || '').trim();
+    const purchaseMonth = String(data.get('purchaseDate') || '').trim();
+    property.purchaseDate = purchaseMonth ? `${purchaseMonth}-01` : '';
     property.mortgageBalance = String(data.get('remainingMortgage') || '').trim();
     property.mortgageProductType = String(data.get('mortgageProductType') || '').trim();
     property.productType = property.mortgageProductType;
@@ -1122,11 +1211,36 @@ function bindFinancialsEdit(index) {
 function bindTenancyEdit(index) {
   const modal = document.getElementById('tenancy-edit-modal');
   const form = document.getElementById('tenancy-edit-form');
-  const rowsContainer = document.getElementById('tenancy-edit-rows');
-  if (!modal || !form || !rowsContainer) return;
+  if (!modal || !form) return;
 
   const open = () => { modal.hidden = false; };
   const close = () => { modal.hidden = true; };
+
+  document.querySelector('[data-action="open-tenancy-edit"]')?.addEventListener('click', open);
+  modal.querySelectorAll('[data-action="close-tenancy-edit"]').forEach((el) => {
+    el.addEventListener('click', close);
+  });
+
+  const property = state.portfolio?.properties[index];
+  if (!property || !isHmoProperty(property)) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const portfolio = state.portfolio;
+      if (!portfolio?.properties[index]) return;
+
+      portfolio.properties[index].rentAgreed = String(
+        form.querySelector('[name="rentAgreed"]')?.value || '',
+      ).trim();
+      portfolio.properties[index].tenancies = [];
+      saveState(state);
+      close();
+      render();
+    });
+    return;
+  }
+
+  const rowsContainer = document.getElementById('tenancy-edit-rows');
+  if (!rowsContainer) return;
 
   const reindexRows = () => {
     rowsContainer.querySelectorAll('.tenancy-edit-row').forEach((row, rowIndex) => {
@@ -1142,26 +1256,21 @@ function bindTenancyEdit(index) {
     reindexRows();
   };
 
-  document.querySelector('[data-action="open-tenancy-edit"]')?.addEventListener('click', open);
-  modal.querySelectorAll('[data-action="close-tenancy-edit"]').forEach((el) => {
-    el.addEventListener('click', close);
-  });
-
   modal.querySelector('[data-action="add-tenancy-row"]')?.addEventListener('click', () => addRow());
 
   modal.querySelector('[data-action="prefill-tenancy-single"]')?.addEventListener('click', () => {
-    const property = state.portfolio?.properties[index];
-    if (!property) return;
-    rowsContainer.innerHTML = getDemoSingleTenancy(enrichPropertyWithAvm(property))
+    const currentProperty = state.portfolio?.properties[index];
+    if (!currentProperty) return;
+    rowsContainer.innerHTML = getDemoSingleTenancy(enrichPropertyWithAvm(currentProperty))
       .map((tenancy, rowIndex) => renderTenancyEditRow(tenancy, rowIndex))
       .join('');
     reindexRows();
   });
 
   modal.querySelector('[data-action="prefill-tenancy-hmo"]')?.addEventListener('click', () => {
-    const property = state.portfolio?.properties[index];
-    if (!property) return;
-    rowsContainer.innerHTML = getDemoTenancies(enrichPropertyWithAvm(property))
+    const currentProperty = state.portfolio?.properties[index];
+    if (!currentProperty) return;
+    rowsContainer.innerHTML = getDemoTenancies(enrichPropertyWithAvm(currentProperty))
       .map((tenancy, rowIndex) => renderTenancyEditRow(tenancy, rowIndex))
       .join('');
     reindexRows();
@@ -1187,7 +1296,7 @@ function bindTenancyEdit(index) {
     const portfolio = state.portfolio;
     if (!portfolio?.properties[index]) return;
 
-    const property = portfolio.properties[index];
+    const currentProperty = portfolio.properties[index];
     const tenancies = [...rowsContainer.querySelectorAll('.tenancy-edit-row')].map((row) => ({
       roomNumber: String(row.querySelector('[name="roomNumber"]')?.value || '').trim(),
       tenantName: String(row.querySelector('[name="tenantName"]')?.value || '').trim(),
@@ -1203,8 +1312,8 @@ function bindTenancyEdit(index) {
       || tenancy.endDate
     ));
 
-    property.tenancies = tenancies;
-    syncAchievedRentFromTenancies(property);
+    currentProperty.tenancies = tenancies;
+    syncAchievedRentFromTenancies(currentProperty);
     saveState(state);
     close();
     render();
@@ -1339,11 +1448,14 @@ function renderPropertyRiskTab(property) {
   `;
 }
 
-function renderPropertyEsgTab(property) {
-  const seed = propertyDemoSeed(property);
+function renderPropertyEsgTab(property, index) {
+  const epc = getPropertyEpcDetails(property, { propertyIndex: index });
+  const epcOpportunityHtml = renderEsgImprovementOpportunity(property, index);
 
   return `
     <div class="property-tab-panel property-tab-panel--overview">
+      ${epcOpportunityHtml}
+
       <section class="overview-section">
         <div class="overview-section__header">
           <div class="overview-section__title-wrap">
@@ -1355,17 +1467,17 @@ function renderPropertyEsgTab(property) {
         <div class="esg-epc-grid">
           <div class="esg-epc-card">
             <span class="esg-epc-card__label">Current EPC rating</span>
-            <span class="esg-epc-card__badge esg-epc-card__badge--current">${seed.epcRating}</span>
+            <span class="esg-epc-card__badge esg-epc-card__badge--current">${epc.currentRating}</span>
           </div>
           <div class="esg-epc-card esg-epc-card--arrow" aria-hidden="true">→</div>
           <div class="esg-epc-card">
             <span class="esg-epc-card__label">Potential EPC rating</span>
-            <span class="esg-epc-card__badge esg-epc-card__badge--potential">${seed.epcPotential}</span>
+            <span class="esg-epc-card__badge esg-epc-card__badge--potential">${epc.potentialRating}</span>
           </div>
           <div class="esg-epc-card esg-epc-card--cost">
             <span class="esg-epc-card__label">Total cost to improve</span>
-            <span class="esg-epc-card__value">${formatCurrency(seed.epcImprovementCost)}</span>
-            <span class="esg-epc-card__hint">Estimated works to reach EPC ${seed.epcPotential}</span>
+            <span class="esg-epc-card__value">${formatCurrency(epc.improvementCost)}</span>
+            <span class="esg-epc-card__hint">Estimated works to reach EPC ${epc.potentialRating}</span>
           </div>
         </div>
       </section>
@@ -1461,7 +1573,7 @@ function renderPropertyTabContent(property, tabId, index) {
     case 'risk':
       return renderPropertyRiskTab(property);
     case 'esg':
-      return renderPropertyEsgTab(property);
+      return renderPropertyEsgTab(property, index);
     case 'market-trends':
       return renderPropertyMarketTrendsTab(property);
     case 'market-demand':
@@ -1478,13 +1590,22 @@ function renderPropertyDetail(index, tabId) {
     return;
   }
 
+  const tab = getPropertyTab(tabId);
+
+  if (tab.id === 'financials' && ensurePropertyFinancialBasics(portfolio.properties[index])) {
+    saveState(state);
+  }
+
+  if (tab.id === 'esg' && ensurePropertyEpcBasics(portfolio.properties[index], index)) {
+    saveState(state);
+  }
+
   const property = getPortfolioProperty(index);
   if (!property) {
     navigate('/portfolio/summary');
     return;
   }
 
-  const tab = getPropertyTab(tabId);
   const tabLabel = tab.label;
 
   document.title = `${property.titleRef} — ${tabLabel} — Lloyds Investor Portal`;
@@ -1627,6 +1748,7 @@ function renderMortgageQuote(listingId) {
               </div>
             </dl>
             <p class="quote-summary__note">Illustrative buy-to-let quote based on a ${quote.depositPct}% deposit and interest-only servicing at ${formatInterestRate(quote.interestRate)}. Subject to affordability, valuation and lending criteria.</p>
+            ${renderLbgApplyButton()}
           </section>
 
           <section class="card quote-comparison">
@@ -1717,6 +1839,32 @@ function renderFinancialRentReviewOpportunity(property, index) {
           Potential uplift of ${formatCurrency(quote.monthlyUplift)} per month (${formatCurrency(quote.annualUplift)} annually) if rent is brought in line with market levels.
         </p>
         <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/rent-review">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderEsgImprovementOpportunity(property, index) {
+  if (!hasEpcImprovementOpportunity(property, { propertyIndex: index })) return '';
+
+  const quote = buildEpcImprovementQuote(property, { propertyIndex: index });
+
+  return `
+    <section class="opportunities-section financial-opportunity-panel" aria-label="EPC improvement opportunity">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">EPC Improvement Opportunity</h2>
+          ${renderInfoTooltip('Properties rated EPC D or below may not be lettable until improved to at least EPC C. Green home improvement finance may help fund energy efficiency works.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">
+          Current rating is <strong>EPC ${quote.currentRating}</strong> — properties must reach at least EPC C to comply with lettings regulations.
+        </p>
+        <p class="opportunities-section__detail">
+          Estimated cost of ${formatCurrency(quote.improvementCost)} to reach EPC ${quote.targetRating}. Review indicative green finance options with Lloyds.
+        </p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/epc-improvement">View</a>
       </div>
     </section>
   `;
@@ -1818,10 +1966,39 @@ function renderRentReviewOpportunitySection(portfolio) {
   `;
 }
 
+function renderEpcImprovementOpportunitySection(portfolio) {
+  const epcOpportunities = getPortfolioEpcImprovementOpportunities(portfolio.properties);
+  if (epcOpportunities.length === 0) return '';
+
+  const first = epcOpportunities[0];
+  const firstAddress = formatAddress(first.property);
+
+  return `
+    <section class="opportunities-section" aria-label="EPC improvement opportunities">
+      <div class="opportunities-section__header">
+        <div class="section-title-row">
+          <h2 class="opportunities-section__title">EPC Improvement Opportunity</h2>
+          ${renderInfoTooltip('Properties rated EPC D, E, F or G may not be lettable until improved to EPC A, B or C. Green home improvement finance may help fund energy efficiency works.')}
+        </div>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">
+          <strong>${escapeHtml(firstAddress)}</strong> is rated EPC ${first.quote.currentRating} and may need improvement to EPC ${first.quote.targetRating} or above.
+        </p>
+        <p class="opportunities-section__detail">
+          Estimated works cost ${formatCurrency(first.quote.improvementCost)} — review green finance options on the ESG &amp; Renovation tab.
+        </p>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/esg">View</a>
+      </div>
+    </section>
+  `;
+}
+
 function renderPortfolioOpportunitySections(metrics, portfolio) {
   return [
     renderRefinanceOpportunitySection(portfolio),
     renderRentReviewOpportunitySection(portfolio),
+    renderEpcImprovementOpportunitySection(portfolio),
     renderMarketplaceOpportunitySection(metrics, portfolio),
   ].filter(Boolean).join('');
 }
@@ -1896,6 +2073,7 @@ function renderPropertyRefinanceQuote(index) {
               </div>
             </dl>
             <p class="quote-summary__note">Illustrative refinance quote based on interest-only servicing at ${formatInterestRate(quote.bestRate)} on your existing balance. Subject to affordability, valuation, early repayment charges and lending criteria.</p>
+            ${renderLbgApplyButton()}
           </section>
 
           <section class="card quote-comparison">
@@ -2032,7 +2210,7 @@ function renderPropertyRentReview(index) {
 
         <div class="btn-group">
           <a class="btn btn-secondary" href="#/portfolio/property/${index}/financials">Back to financials</a>
-          <button type="button" class="btn btn-primary">Prepare documents</button>
+          ${renderDataloftReportButton()}
           <a class="btn btn-tertiary" href="#/portfolio/summary">Return to portfolio</a>
         </div>
       </div>
@@ -2043,12 +2221,155 @@ function renderPropertyRentReview(index) {
   bindCommonActions();
 }
 
+function renderPropertyEpcImprovement(index) {
+  const portfolio = state.portfolio;
+  if (!portfolio) {
+    navigate('/dashboard');
+    return;
+  }
+
+  const property = getPortfolioProperty(index);
+  if (!property) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  if (!hasEpcImprovementOpportunity(property, { propertyIndex: index })) {
+    navigate(`/portfolio/property/${index}/esg`);
+    return;
+  }
+
+  const quote = buildEpcImprovementQuote(property, { propertyIndex: index });
+  const beforeMetrics = computePortfolioMetrics(portfolio.properties);
+  const afterMetrics = computePortfolioMetricsAfterEpcImprovement(portfolio.properties, index, quote);
+  const address = formatAddress(property);
+
+  app.innerHTML = `
+    ${renderHeader()}
+    <main class="page-shell">
+      <div class="page-content">
+        <div class="breadcrumb">
+          <a href="#/dashboard">Dashboard</a> /
+          <a href="#/portfolio/summary">Portfolio summary</a> /
+          <a href="#/portfolio/property/${index}/esg">ESG &amp; Renovation</a> /
+          Green finance
+        </div>
+        <h1 class="page-title">Indicative green finance quote</h1>
+        <p class="page-intro">${escapeHtml(address)}</p>
+
+        <div class="quote-layout">
+          <section class="card quote-summary">
+            <h2 class="section-title">Indicative terms</h2>
+            <dl class="quote-summary__grid">
+              <div class="quote-summary__item">
+                <dt>Current EPC rating</dt>
+                <dd>EPC ${quote.currentRating}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Target EPC rating</dt>
+                <dd>EPC ${quote.targetRating}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Estimated improvement cost</dt>
+                <dd>${formatCurrency(quote.improvementCost)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Indicative additional borrowing</dt>
+                <dd>${formatCurrency(quote.additionalLoan)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Indicative interest rate</dt>
+                <dd>${formatInterestRate(quote.interestRate)}</dd>
+              </div>
+              <div class="quote-summary__item">
+                <dt>Current monthly payment</dt>
+                <dd>${formatCurrency(quote.currentMonthlyPayment)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Additional monthly payment</dt>
+                <dd>${formatCurrency(quote.additionalMonthlyPayment)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+              <div class="quote-summary__item quote-summary__item--highlight">
+                <dt>Indicative new monthly payment</dt>
+                <dd>${formatCurrency(quote.newMonthlyPayment)}<span class="cell-suffix">/mo</span></dd>
+              </div>
+            </dl>
+            <p class="quote-summary__note">Illustrative green home improvement finance to fund energy efficiency works and bring the property to EPC ${quote.targetRating}. Subject to affordability, valuation, works specification and lending criteria. Properties rated EPC D or below may not be lettable until improved to at least EPC C.</p>
+            ${renderLbgApplyButton()}
+          </section>
+
+          <section class="card quote-comparison">
+            <h2 class="section-title">Portfolio impact</h2>
+            <p class="quote-comparison__intro">Estimated effect on your portfolio summary if green finance is used to fund EPC improvement works for this property.</p>
+            <div class="data-table-wrap">
+              <table class="data-table quote-comparison__table">
+                <thead>
+                  <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col">Current portfolio</th>
+                    <th scope="col">After improvement</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
+                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
+                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
+                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
+                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
+                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
+                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
+                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="btn-group">
+          <a class="btn btn-secondary" href="#/portfolio/property/${index}/esg">Back to ESG &amp; Renovation</a>
+          <a class="btn btn-tertiary" href="#/portfolio/summary">Return to portfolio</a>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+  `;
+
+  bindCommonActions();
+}
+
+function renderMarketplaceEpcFilter() {
+  return `
+    <div class="marketplace-epc-filter" role="group" aria-label="Filter listings by EPC rating">
+      <span class="marketplace-epc-filter__label">EPC filter</span>
+      <div class="marketplace-epc-filter__options">
+        <button
+          type="button"
+          class="marketplace-epc-filter__option${marketplaceEpcFilter === 'compliant' ? ' is-active' : ''}"
+          data-epc-filter="compliant"
+          aria-pressed="${marketplaceEpcFilter === 'compliant'}"
+        >EPC A–C</button>
+        <button
+          type="button"
+          class="marketplace-epc-filter__option${marketplaceEpcFilter === 'all' ? ' is-active' : ''}"
+          data-epc-filter="all"
+          aria-pressed="${marketplaceEpcFilter === 'all'}"
+        >All EPC</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderMarketplaceCard(listing) {
   const address = formatAddress(listing);
+  const epcRating = String(listing.epcRating || '—').toUpperCase();
+  const epcCompliant = isCompliantEpcRating(listing.epcRating);
+
   return `
     <article class="marketplace-card">
       <div class="marketplace-card__media" aria-hidden="true">
         <span class="marketplace-card__media-label">${escapeHtml(listing.propertyType)}</span>
+        <span class="marketplace-card__epc-badge marketplace-card__epc-badge--${epcRating.toLowerCase()}${epcCompliant ? ' marketplace-card__epc-badge--compliant' : ''}">EPC ${epcRating}</span>
       </div>
       <div class="marketplace-card__body">
         <p class="marketplace-card__meta">${listing.bedrooms} bed ${escapeHtml(listing.propertyType.toLowerCase())} · ${escapeHtml(listing.city)}</p>
@@ -2062,6 +2383,10 @@ function renderMarketplaceCard(listing) {
             <dt>Estimated market rent</dt>
             <dd>${formatCurrency(listing.marketRent)}<span class="cell-suffix">/mo</span></dd>
           </div>
+          <div class="marketplace-card__stat">
+            <dt>EPC rating</dt>
+            <dd><span class="marketplace-card__epc-value marketplace-card__epc-value--${epcRating.toLowerCase()}">${epcRating}</span></dd>
+          </div>
           <div class="marketplace-card__stat marketplace-card__stat--highlight">
             <dt>Estimated gross yield</dt>
             <dd>${formatPercent(listing.grossYield)}</dd>
@@ -2071,6 +2396,15 @@ function renderMarketplaceCard(listing) {
       </div>
     </article>
   `;
+}
+
+function bindMarketplaceEpcFilter() {
+  document.querySelectorAll('[data-epc-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      marketplaceEpcFilter = button.dataset.epcFilter;
+      renderMarketplace();
+    });
+  });
 }
 
 function renderMarketplace() {
@@ -2087,6 +2421,7 @@ function renderMarketplace() {
   }
 
   const opportunities = getPortfolioMarketOpportunities(portfolio.properties);
+  const filteredListings = filterMarketplaceByEpc(opportunities.listings, marketplaceEpcFilter);
   const areaLabel = opportunities.cities.length === 1
     ? opportunities.cities[0]
     : 'your portfolio areas';
@@ -2112,9 +2447,17 @@ function renderMarketplace() {
             </div>
           </div>
         ` : `
-          <div class="marketplace-grid">
-            ${opportunities.listings.map((listing) => renderMarketplaceCard(listing)).join('')}
-          </div>
+          ${renderMarketplaceEpcFilter()}
+          ${filteredListings.length === 0 ? `
+            <div class="card marketplace-empty-filter">
+              <p class="empty-state-text">No listings match the EPC A–C filter in your portfolio areas. Switch to All EPC to see every available property.</p>
+            </div>
+          ` : `
+            <p class="marketplace-results-count">${filteredListings.length} ${filteredListings.length === 1 ? 'listing' : 'listings'} shown</p>
+            <div class="marketplace-grid">
+              ${filteredListings.map((listing) => renderMarketplaceCard(listing)).join('')}
+            </div>
+          `}
           <div class="btn-group">
             <a class="btn btn-secondary" href="#/portfolio/summary">Back to portfolio</a>
           </div>
@@ -2125,6 +2468,7 @@ function renderMarketplace() {
   `;
 
   bindCommonActions();
+  bindMarketplaceEpcFilter();
 }
 
 function renderPortfolioEquityMetric(metrics) {
@@ -2161,7 +2505,7 @@ function renderPortfolioReport(metrics) {
       <div class="portfolio-report__header">
         <div class="section-title-row">
           <h2 class="portfolio-report__title">Portfolio overview</h2>
-          ${renderInfoTooltip('High-level portfolio summary continuously updated with the latest property data to provide an accurate view of how your investments are performing.')}
+          ${renderInfoTooltip('High-level portfolio summary continuously updated with the latest property data to provide an accurate view of how your investments are performing. Value data is monitored 24/7, so you\'re always the first to know about changes.')}
         </div>
       </div>
       <div class="portfolio-report__columns">
@@ -2513,12 +2857,31 @@ function renderManualEntryForm(values = {}, errors = {}) {
   `;
 }
 
+function renderValidationInput(rowIndex, field, value, hasError) {
+  return `
+    <input
+      type="text"
+      class="validation-table__input${hasError ? ' input-error' : ''}"
+      data-row="${rowIndex}"
+      data-field="${field}"
+      value="${escapeHtml(value || '')}"
+      aria-label="${escapeHtml(FIELD_LABELS[field])}"
+      aria-invalid="${hasError ? 'true' : 'false'}"
+    >
+  `;
+}
+
 function renderBulkValidationPanel(result) {
   if (!result || !result.rows.length) return '';
+
+  const hasInvalidRows = result.invalidCount > 0;
 
   return `
     <div class="card" id="bulk-validation-panel">
       <h2 class="section-title">Import validation</h2>
+      ${hasInvalidRows ? `
+        <p class="validation-panel__intro">Edit any rows with issues below, then click <strong>Try again</strong> to re-validate your data.</p>
+      ` : ''}
       <div class="validation-summary">
         <span class="validation-summary__item validation-summary__item--valid">${result.validCount} valid</span>
         <span class="validation-summary__item validation-summary__item--invalid">${result.invalidCount} with issues</span>
@@ -2528,36 +2891,85 @@ function renderBulkValidationPanel(result) {
           <thead>
             <tr>
               <th>Row</th>
-              <th>Ref</th>
+              <th>Title / Ref</th>
               <th>Postcode</th>
-              <th>Address</th>
+              <th>Property number</th>
+              <th>Street</th>
+              <th>City</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            ${result.rows.map((row) => `
+            ${result.rows.map((row, rowIndex) => `
               <tr class="${row.valid ? '' : 'row-invalid'}">
                 <td>${row.line}</td>
-                <td>${escapeHtml(row.property.titleRef || '—')}</td>
-                <td>${escapeHtml(row.property.postcode || '—')}</td>
-                <td>${escapeHtml(row.property.propertyNumber && row.property.street ? `${row.property.propertyNumber} ${row.property.street}, ${row.property.city}` : '—')}</td>
+                <td>${renderValidationInput(rowIndex, 'titleRef', row.property.titleRef, !!row.errors?.titleRef)}</td>
+                <td>${renderValidationInput(rowIndex, 'postcode', row.property.postcode, !!row.errors?.postcode)}</td>
+                <td>${renderValidationInput(rowIndex, 'propertyNumber', row.property.propertyNumber, !!row.errors?.propertyNumber)}</td>
+                <td>${renderValidationInput(rowIndex, 'street', row.property.street, !!row.errors?.street)}</td>
+                <td>${renderValidationInput(rowIndex, 'city', row.property.city, !!row.errors?.city)}</td>
                 <td class="${row.valid ? '' : 'cell-error'}">${escapeHtml(row.summary)}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
       </div>
-      ${result.validCount > 0 ? `
-        <div class="btn-group">
+      <div class="btn-group">
+        ${hasInvalidRows ? '<button type="button" class="btn btn-secondary" id="bulk-revalidate-btn">Try again</button>' : ''}
+        ${result.validCount > 0 ? `
           <button type="button" class="btn btn-primary" id="import-valid-btn">Import ${result.validCount} valid propert${result.validCount === 1 ? 'y' : 'ies'}</button>
-        </div>
-      ` : `
+        ` : ''}
+      </div>
+      ${result.validCount === 0 ? `
         <div class="alert" style="margin-top:16px;background:#fde8ec;color:#8a1530;border:1px solid #f5c2cb;">
           No valid properties to import. Correct the issues above and try again.
         </div>
-      `}
+      ` : ''}
     </div>
   `;
+}
+
+function collectBulkImportRowsFromPanel() {
+  const panel = document.getElementById('bulk-validation-panel');
+  if (!panel || !pendingBulkImport) return [];
+
+  return pendingBulkImport.rows.map((row, rowIndex) => {
+    const property = { ...row.property };
+    REQUIRED_FIELDS.forEach((field) => {
+      const input = panel.querySelector(`[data-row="${rowIndex}"][data-field="${field}"]`);
+      if (input) property[field] = input.value.trim();
+    });
+    return { line: row.line, property };
+  });
+}
+
+function applyBulkImportResult(result) {
+  pendingBulkImport = result;
+
+  if (!result.rows.length) {
+    renderUploadCsv();
+    return;
+  }
+
+  if (result.invalidCount === 0) {
+    finalizeBulkImport(result.validProperties);
+    return;
+  }
+
+  renderUploadCsv();
+}
+
+function bindBulkValidationPanel() {
+  document.getElementById('bulk-revalidate-btn')?.addEventListener('click', () => {
+    const rows = collectBulkImportRowsFromPanel();
+    applyBulkImportResult(validateImportRows(rows));
+  });
+
+  document.getElementById('import-valid-btn')?.addEventListener('click', () => {
+    if (pendingBulkImport?.validCount) {
+      finalizeBulkImport(pendingBulkImport.validProperties);
+    }
+  });
 }
 
 function bindManualEntryForm() {
@@ -2736,7 +3148,7 @@ function renderUploadCsv() {
             <p class="scenario-panel__label">Demo scenarios</p>
             <div class="btn-group" style="margin-top: 0;">
               <button type="button" class="btn btn-secondary" data-csv="perfect">Perfect import</button>
-              <button type="button" class="btn btn-tertiary" data-csv="errors">Import with errors</button>
+              <button type="button" class="btn btn-secondary" data-csv="errors">Import with errors</button>
             </div>
           </div>
           <div class="btn-group" style="margin-top: 0;">
@@ -2764,13 +3176,9 @@ function renderUploadCsv() {
 
   bindCommonActions();
   setupCsvUpload();
+  bindBulkValidationPanel();
   document.querySelectorAll('[data-csv]').forEach((btn) => {
     btn.addEventListener('click', () => loadSampleCsv(btn.dataset.csv));
-  });
-  document.getElementById('import-valid-btn')?.addEventListener('click', () => {
-    if (pendingBulkImport?.validCount) {
-      finalizeBulkImport(pendingBulkImport.validProperties);
-    }
   });
 }
 
@@ -2804,7 +3212,7 @@ function renderSummary() {
           <div class="portfolio-properties-header">
             <div class="section-title-row">
               <h2 class="section-title">Portfolio properties</h2>
-              ${renderInfoTooltip('Properties currently held in your portfolio, showing key performance metrics for at-a-glance monitoring. Select a property to view the full asset profile.')}
+              ${renderInfoTooltip('Properties currently held in your portfolio, showing key performance metrics for at-a-glance monitoring. Value data is monitored 24/7, so you\'re always the first to know about changes. Select a property to view the full asset profile.')}
             </div>
             <a class="btn btn-secondary" href="#/portfolio/summary/add">Add property</a>
           </div>
@@ -3041,20 +3449,7 @@ function finishPortfolio() {
 }
 
 function processCsvText(text) {
-  const result = parseCsvDetailed(text);
-  pendingBulkImport = result;
-
-  if (result.validCount === 0) {
-    renderUploadCsv();
-    return;
-  }
-
-  if (result.invalidCount === 0) {
-    finalizeBulkImport(result.validProperties);
-    return;
-  }
-
-  renderUploadCsv();
+  applyBulkImportResult(parseCsvDetailed(text));
 }
 
 function setupCsvUpload() {
@@ -3137,6 +3532,10 @@ function render() {
   }
   if (parsed.type === 'rent-review') {
     renderPropertyRentReview(parsed.index);
+    return;
+  }
+  if (parsed.type === 'epc-improvement') {
+    renderPropertyEpcImprovement(parsed.index);
     return;
   }
 
