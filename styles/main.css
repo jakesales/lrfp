@@ -765,6 +765,11 @@ input::placeholder {
   margin-top: 0;
 }
 
+.financial-completion-panel {
+  margin-top: 0;
+  margin-bottom: 24px;
+}
+
 .opportunities-section__title {
   margin: 0;
   font-size: 1.125rem;

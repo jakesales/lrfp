@@ -53,6 +53,7 @@ import {
   computePortfolioMetricsAfterRentReview,
   getPortfolioRefinanceOpportunities,
   getPortfolioRentReviewOpportunities,
+  hasCompletedMortgageDetails,
   hasRefinanceOpportunity,
   hasRentReviewOpportunity,
   getCurrentBestMortgageRate,
@@ -982,6 +983,24 @@ function renderTenancyEditModal(property) {
   `;
 }
 
+function getPropertyDefaultTab(property) {
+  return hasCompletedMortgageDetails(property) ? 'overview' : 'financials';
+}
+
+function renderFinancialCompletionBanner() {
+  return `
+    <section class="opportunities-section financial-completion-panel" aria-label="Complete financial information">
+      <div class="opportunities-section__header">
+        <h2 class="opportunities-section__title">Complete your financial information</h2>
+      </div>
+      <div class="opportunities-section__body">
+        <p class="opportunities-section__message">Add your mortgage and rental details to unlock insights, opportunities, and analysis for this property.</p>
+        <button type="button" class="btn opportunities-section__cta" data-action="open-financials-edit">Add details</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderPropertyFinancialsTab(property, index) {
   const fin = computePropertyFinancials(property);
   const tenancies = getPropertyTenancies(property);
@@ -1026,9 +1045,13 @@ function renderPropertyFinancialsTab(property, index) {
   const purchaseDateDisplay = formatPurchaseDate(fin.purchaseDate);
   const refinanceOpportunityHtml = renderFinancialRefinanceOpportunity(property, index);
   const rentReviewOpportunityHtml = renderFinancialRentReviewOpportunity(property, index);
+  const completionBannerHtml = hasCompletedMortgageDetails(property)
+    ? ''
+    : renderFinancialCompletionBanner();
 
   return `
     <div class="property-tab-panel property-tab-panel--financials">
+      ${completionBannerHtml}
       <div class="scenario-panel financial-demo-panel">
         <p class="scenario-panel__label">Demo scenarios</p>
         <div class="financial-demo-panel__actions">
@@ -1587,6 +1610,17 @@ function renderPropertyDetail(index, tabId) {
   const portfolio = state.portfolio;
   if (!portfolio) {
     navigate('/dashboard');
+    return;
+  }
+
+  const propertyForRoute = portfolio.properties[index];
+  if (!propertyForRoute) {
+    navigate('/portfolio/summary');
+    return;
+  }
+
+  if (tabId === 'overview' && !hasCompletedMortgageDetails(propertyForRoute)) {
+    navigate(`/portfolio/property/${index}/financials`);
     return;
   }
 
@@ -3271,7 +3305,9 @@ function renderSummary() {
 
   document.querySelectorAll('[data-action="view-property"]').forEach((row) => {
     const openProperty = () => {
-      navigate(`/portfolio/property/${row.dataset.index}/overview`);
+      const property = portfolio.properties[Number(row.dataset.index)];
+      const tab = property ? getPropertyDefaultTab(property) : 'overview';
+      navigate(`/portfolio/property/${row.dataset.index}/${tab}`);
     };
     row.addEventListener('click', openProperty);
     row.addEventListener('keydown', (event) => {
