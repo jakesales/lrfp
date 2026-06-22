@@ -2046,7 +2046,6 @@ function renderMortgageRenewalOpportunitySection(portfolio) {
 
   const first = renewalOpportunities[0];
   const firstAddress = formatAddress(first.property);
-  const exclusiveRateLabel = formatInterestRate(first.quote.exclusiveRate);
 
   return `
     <section class="opportunities-section" aria-label="Mortgage renewal opportunities">
@@ -2061,9 +2060,9 @@ function renderMortgageRenewalOpportunitySection(portfolio) {
           <strong>${escapeHtml(firstAddress)}</strong> has a buy-to-let mortgage approaching its renewal date. Lloyds would like to offer you an exclusive remortgage rate as an existing landlord customer.
         </p>
         <p class="opportunities-section__detail">
-          Current deal ends in <strong>${escapeHtml(first.quote.expiryDisplay || '—')}</strong> — review indicative terms from ${exclusiveRateLabel} ahead of renewal.
+          Current deal ends in <strong>${escapeHtml(first.quote.expiryDisplay || '—')}</strong> — review renewal options on the financials tab.
         </p>
-        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/renewal-quote">View</a>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/financials">View</a>
       </div>
     </section>
   `;
