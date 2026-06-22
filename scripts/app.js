@@ -195,9 +195,9 @@ function parseRoute(route) {
     return { type: 'rent-review', index: Number(rentReviewMatch[1]) };
   }
 
-  const mortgageRenewalQuoteMatch = route.match(/^\/portfolio\/property\/(\d+)\/mortgage-renewal-quote$/);
-  if (mortgageRenewalQuoteMatch) {
-    return { type: 'mortgage-renewal-quote', index: Number(mortgageRenewalQuoteMatch[1]) };
+  const renewalQuoteMatch = route.match(/^\/portfolio\/property\/(\d+)\/renewal-quote$/);
+  if (renewalQuoteMatch) {
+    return { type: 'renewal-quote', index: Number(renewalQuoteMatch[1]) };
   }
 
   const epcImprovementMatch = route.match(/^\/portfolio\/property\/(\d+)\/epc-improvement$/);
@@ -1923,7 +1923,7 @@ function renderFinancialMortgageRenewalOpportunity(property, index) {
         <p class="opportunities-section__detail">
           Your current deal ends in <strong>${escapeHtml(quote.expiryDisplay || '—')}</strong>. Review indicative terms from <strong>${exclusiveRateLabel}</strong> on your remaining balance of ${formatCurrency(quote.loanAmount)}.
         </p>
-        <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/mortgage-renewal-quote">View</a>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/renewal-quote">View</a>
       </div>
     </section>
   `;
@@ -2063,7 +2063,7 @@ function renderMortgageRenewalOpportunitySection(portfolio) {
         <p class="opportunities-section__detail">
           Current deal ends in <strong>${escapeHtml(first.quote.expiryDisplay || '—')}</strong> — review indicative terms from ${exclusiveRateLabel} ahead of renewal.
         </p>
-        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/mortgage-renewal-quote">View</a>
+        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/renewal-quote">View</a>
       </div>
     </section>
   `;
@@ -3863,7 +3863,7 @@ function render() {
     renderPropertyRefinanceQuote(parsed.index);
     return;
   }
-  if (parsed.type === 'mortgage-renewal-quote') {
+  if (parsed.type === 'renewal-quote') {
     renderPropertyMortgageRenewalQuote(parsed.index);
     return;
   }
